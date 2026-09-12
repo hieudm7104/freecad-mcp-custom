@@ -1,0 +1,13 @@
+.git
+.github
+.claude
+.gitnexus
+__pycache__
+.venv
+.pytest_cache
+tests
+docs
+assets
+examples
+*.md
+!README.md

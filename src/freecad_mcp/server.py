@@ -713,6 +713,30 @@ def _validate_host(value: str) -> str:
     )
 
 
+def _run_streamable_http(port: int) -> None:
+    """Serve the MCP app over streamable-HTTP, gated by an API key.
+
+    Intended for the Docker deployment (see docker-compose.yml), where the
+    client is a remote MCP-over-HTTP connection instead of a local stdio
+    process.
+    """
+    import os
+
+    import uvicorn
+
+    from .http_auth import ApiKeyMiddleware
+
+    api_key = os.environ.get("FREECAD_MCP_API_KEY")
+    if not api_key:
+        raise SystemExit(
+            "FREECAD_MCP_API_KEY must be set to use --transport streamable-http"
+        )
+    app = mcp.streamable_http_app()
+    app.add_middleware(ApiKeyMiddleware, api_key=api_key)
+    logger.info(f"Serving streamable-http on 0.0.0.0:{port}")
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
+
 def main():
     """Run the MCP server"""
     import argparse
@@ -721,6 +745,8 @@ def main():
     parser.add_argument("--only-text-feedback", action="store_true", help="Only return text feedback")
     parser.add_argument("--host", type=_validate_host, default="localhost", help="Host address of the FreeCAD RPC server to connect to (default: localhost)")
     parser.add_argument("--freecadcmd", default=None, help="Command that starts headless FreeCAD for execute_code_headless, e.g. 'flatpak run --command=freecadcmd org.freecad.FreeCAD' (default: auto-detect PATH, then Flatpak)")
+    parser.add_argument("--transport", choices=["stdio", "streamable-http"], default="stdio", help="MCP transport to serve (default: stdio). Use streamable-http for a remote/Dockerized deployment; requires FREECAD_MCP_API_KEY.")
+    parser.add_argument("--port", type=int, default=8000, help="Port to listen on for --transport streamable-http (default: 8000)")
     args = parser.parse_args()
     state.only_text_feedback = args.only_text_feedback
     state.rpc_host = args.host
@@ -728,4 +754,7 @@ def main():
     state.freecadcmd = parse_command(args.freecadcmd)
     logger.info(f"Only text feedback: {state.only_text_feedback}")
     logger.info(f"Connecting to FreeCAD RPC server at: {state.rpc_host}")
-    mcp.run()
+    if args.transport == "streamable-http":
+        _run_streamable_http(args.port)
+    else:
+        mcp.run()

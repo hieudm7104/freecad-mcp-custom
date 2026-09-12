@@ -1,0 +1,45 @@
+services:
+  freecad:
+    build:
+      context: .
+      dockerfile: docker/freecad/Dockerfile
+    volumes:
+      - freecad_data:/data
+    networks: [mcpnet]
+    restart: unless-stopped
+
+  mcp:
+    build:
+      context: .
+      dockerfile: docker/mcp/Dockerfile
+    command:
+      - "--transport"
+      - "streamable-http"
+      - "--port"
+      - "8000"
+      - "--host"
+      - "freecad"
+    environment:
+      - FREECAD_MCP_API_KEY=${FREECAD_MCP_API_KEY:?set FREECAD_MCP_API_KEY in .env}
+    volumes:
+      - freecad_data:/data
+    ports:
+      - "${MCP_PORT:-8000}:8000"
+    depends_on: [freecad]
+    networks: [mcpnet]
+    restart: unless-stopped
+
+  render:
+    build:
+      context: .
+      dockerfile: docker/render/Dockerfile
+    volumes:
+      - freecad_data:/data
+    networks: [mcpnet]
+    profiles: ["render"]
+
+volumes:
+  freecad_data:
+
+networks:
+  mcpnet:

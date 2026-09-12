@@ -62,6 +62,7 @@ default.
 | [Tools](docs/tools.md) | Available tools, screenshots, FEM analysis |
 | [Code execution](docs/execution.md) | GUI execution, background jobs, headless scripts, timeout troubleshooting |
 | [Demos and examples](docs/examples.md) | Design demos, FEM example, ADK and LangChain integrations |
+| [Docker deployment](docs/docker.md) | Run MCP (API-key auth), headless FreeCAD, and Blender rendering in Docker |
 
 ## Contributors
 

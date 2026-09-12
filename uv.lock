@@ -70,6 +70,7 @@ version = "0.1.23"
 source = { editable = "." }
 dependencies = [
     { name = "mcp", extra = ["cli"] },
+    { name = "uvicorn" },
     { name = "validators" },
 ]
 
@@ -81,6 +82,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "mcp", extras = ["cli"], specifier = ">=1.12.2,<3" },
+    { name = "uvicorn", specifier = ">=0.30" },
     { name = "validators", specifier = ">=0.34.0" },
 ]
 
