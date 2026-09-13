@@ -12,7 +12,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-_UNAUTHENTICATED_PATHS = {"/oauth/authorize", "/oauth/token"}
+_UNAUTHENTICATED_PATHS = {"/oauth/authorize", "/oauth/token", "/oauth/register"}
 
 
 def _is_preview_path(path: str) -> bool:

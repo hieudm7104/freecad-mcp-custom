@@ -89,9 +89,20 @@ ultimately gated on that same key (see the module docstring for the full
 design). Static `X-API-Key`/`Bearer <key>` auth keeps working unchanged
 whether or not this is enabled.
 
-To register this server as a ChatGPT connector, when asked for auth choose
-**OAuth** (registration method: **User-Defined OAuth Client** — this shim
-doesn't implement Dynamic Client Registration) and fill in:
+Two client styles are supported, because MCP clients differ in how they get
+a `client_id`:
+
+**Claude.ai custom connectors (and anything else that self-registers).**
+Claude's "Add custom connector" flow is fully automatic: it reads the
+discovery metadata, registers itself via Dynamic Client Registration
+(RFC 7591) at `POST /oauth/register`, then runs the normal authorize/token
+flow. There is no field to type a `client_id` into. Just give it the `/mcp`
+URL and log in with the API key — nothing else to fill in. (DCR is enabled
+whenever the OAuth shim is; the issued `client_id` is self-verifying so it
+needs no server-side store and survives restarts.)
+
+**ChatGPT connectors (manual client entry).** ChatGPT has no DCR; choose
+**OAuth**, registration method **User-Defined OAuth Client**, and fill in:
 
 | Field | Value |
 | --- | --- |
@@ -104,11 +115,17 @@ doesn't implement Dynamic Client Registration) and fill in:
 | Authorization server base | `https://freecad-mcp.hieudm.site` |
 | OIDC enabled | No |
 
-`GET /.well-known/oauth-authorization-server` also publishes this as RFC 8414
-discovery metadata for clients that support it, and
+`GET /.well-known/oauth-authorization-server` publishes RFC 8414 discovery
+metadata (now including `registration_endpoint`), and
 `GET /.well-known/oauth-protected-resource` publishes the RFC 9728 resource
 metadata pointing at `/mcp` and this authorization server, for clients that
 auto-discover instead of taking manually-entered endpoint URLs.
+
+Neither client style is a security boundary on its own: the `client_id` is
+public (a static configured one, or a DCR-issued one), token endpoint auth is
+`none`, and access is gated entirely on the API key entered at the login page
+plus PKCE. Verified end-to-end on both servers: DCR → authorize → token →
+`tools/list` returns the full tool set (22 FreeCAD, 33 Blender).
 
 **Note the exact path**: the MCP endpoint is `https://freecad-mcp.hieudm.site/mcp`,
 not the bare domain — a client configured with just the domain gets `404` on

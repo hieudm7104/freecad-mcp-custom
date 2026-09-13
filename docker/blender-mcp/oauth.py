@@ -21,10 +21,18 @@ dependency), keyed off the API key itself, so no server-side session store
 is needed beyond the few-second-lived authorization codes.
 
 This is intentionally not a general-purpose OAuth server: there is exactly
-one registered client (whatever ``BLENDER_MCP_OAUTH_CLIENT_ID`` is set to)
-and exactly one user (whoever knows ``BLENDER_MCP_API_KEY``). Dynamic Client
-Registration is not implemented — register the client as a "User-Defined
-OAuth Client" on the MCP-client side with that same client ID.
+one user (whoever knows ``BLENDER_MCP_API_KEY``). Two ways to register a
+client are supported, because different MCP clients differ here:
+
+- A static ``BLENDER_MCP_OAUTH_CLIENT_ID`` — register it on the client side
+  as a "User-Defined OAuth Client" (what ChatGPT's Connector UI does; it has
+  a field to type the id into).
+- Dynamic Client Registration (RFC 7591) at ``POST /oauth/register`` — for
+  clients that self-register and have no such field (what Claude.ai's custom
+  connector flow does). The issued client_id is self-verifying (see
+  ``_issue_client_id``), so it needs no server-side store and survives
+  restarts. Neither path is a security boundary: the client_id is public and
+  access is still gated entirely on the API key + PKCE.
 """
 
 import base64
@@ -100,6 +108,31 @@ def _code_challenge_ok(verifier: str, challenge: str, method: str) -> bool:
     return False
 
 
+def _issue_client_id(api_key: str) -> str:
+    """Mint a public client identifier for a Dynamic Client Registration.
+
+    Made self-verifying (a random half plus a truncated HMAC of it) rather
+    than stored, so it survives a server restart with no database — the same
+    reason the tokens above are stateless. The client_id is not a secret and
+    grants nothing on its own: /oauth/authorize still requires the API key,
+    and the token exchange still requires the PKCE verifier.
+    """
+    rnd = secrets.token_hex(8)
+    sig = hmac.new(_signing_key(api_key), f"dcr:{rnd}".encode(), hashlib.sha256).hexdigest()[:16]
+    return f"dcr-{rnd}-{sig}"
+
+
+def _client_id_ok(client_id: str, configured_client_id: str, api_key: str) -> bool:
+    """Accept the statically configured client_id or any we issued via DCR."""
+    if configured_client_id and hmac.compare_digest(client_id, configured_client_id):
+        return True
+    parts = client_id.split("-")
+    if len(parts) == 3 and parts[0] == "dcr":
+        expected = hmac.new(_signing_key(api_key), f"dcr:{parts[1]}".encode(), hashlib.sha256).hexdigest()[:16]
+        return hmac.compare_digest(parts[2], expected)
+    return False
+
+
 _LOGIN_PAGE = """<!doctype html>
 <html><head><title>Blender MCP</title>
 <meta name="viewport" content="width=device-width, initial-scale=1"></head>
@@ -137,7 +170,7 @@ def register_oauth_routes(app: Starlette, api_key: str, client_id: str) -> None:
         code_challenge_method = params.get("code_challenge_method", "S256")
         scope = params.get("scope", "")
 
-        if req_client_id != client_id:
+        if not _client_id_ok(req_client_id, client_id, api_key):
             return JSONResponse({"error": "unauthorized_client"}, status_code=400)
         if not redirect_uri:
             return JSONResponse(
@@ -195,7 +228,11 @@ def register_oauth_routes(app: Starlette, api_key: str, client_id: str) -> None:
                     {"error": "invalid_grant", "error_description": "redirect_uri mismatch"},
                     status_code=400,
                 )
-            if form.get("client_id", client_id) != entry["client_id"]:
+            # A public client may omit client_id at the token step; it already
+            # proved possession via the code + PKCE verifier. Default to the id
+            # bound into the code, not the statically configured one, so a
+            # DCR-issued client isn't rejected here.
+            if form.get("client_id", entry["client_id"]) != entry["client_id"]:
                 return JSONResponse({"error": "invalid_client"}, status_code=400)
             if not _code_challenge_ok(
                 form.get("code_verifier", ""), entry["code_challenge"], entry["code_challenge_method"]
@@ -243,6 +280,31 @@ def register_oauth_routes(app: Starlette, api_key: str, client_id: str) -> None:
         host = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc))
         return f"{scheme}://{host}"
 
+    async def register(request: Request):
+        # RFC 7591 Dynamic Client Registration. Claude.ai's custom-connector
+        # flow (unlike ChatGPT's) has no field to type a client_id into — it
+        # registers itself here automatically, then runs the normal
+        # authorize/token flow with the id we return. Public client, no
+        # secret; the API key entered at /oauth/authorize stays the only real
+        # gate, so we accept any registration and just hand back an id.
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        now = int(time.time())
+        response = {
+            "client_id": _issue_client_id(api_key),
+            "client_id_issued_at": now,
+            "token_endpoint_auth_method": "none",
+            "grant_types": body.get("grant_types", ["authorization_code", "refresh_token"]),
+            "response_types": body.get("response_types", ["code"]),
+            "redirect_uris": body.get("redirect_uris", []),
+            "scope": body.get("scope", "mcp"),
+        }
+        if body.get("client_name"):
+            response["client_name"] = body["client_name"]
+        return JSONResponse(response, status_code=201)
+
     async def metadata(request: Request):
         base = _public_base(request)
         return JSONResponse(
@@ -250,6 +312,7 @@ def register_oauth_routes(app: Starlette, api_key: str, client_id: str) -> None:
                 "issuer": base,
                 "authorization_endpoint": f"{base}/oauth/authorize",
                 "token_endpoint": f"{base}/oauth/token",
+                "registration_endpoint": f"{base}/oauth/register",
                 "response_types_supported": ["code"],
                 "grant_types_supported": ["authorization_code", "refresh_token"],
                 "code_challenge_methods_supported": ["S256", "plain"],
@@ -274,6 +337,7 @@ def register_oauth_routes(app: Starlette, api_key: str, client_id: str) -> None:
 
     app.add_route("/oauth/authorize", authorize, methods=["GET", "POST"])
     app.add_route("/oauth/token", token, methods=["POST"])
+    app.add_route("/oauth/register", register, methods=["POST"])
     app.add_route("/.well-known/oauth-authorization-server", metadata, methods=["GET"])
     app.add_route("/.well-known/oauth-protected-resource", protected_resource_metadata, methods=["GET"])
     app.add_route("/.well-known/oauth-protected-resource/mcp", protected_resource_metadata, methods=["GET"])

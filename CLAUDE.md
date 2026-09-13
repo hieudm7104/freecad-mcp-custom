@@ -159,6 +159,18 @@ render, and a live-controlled Blender instance via a vendored
   reach this server. `.env` must use LF line endings, not CRLF — a stray
   trailing `\r` on that line once caused client-id comparisons to fail in a
   way that looked like an auth bug (see below).
+- The OAuth shim supports **both** a static client_id (ChatGPT types it into a
+  field) **and** Dynamic Client Registration (RFC 7591) at
+  `POST /oauth/register`, advertised as `registration_endpoint` in the
+  metadata. DCR is what **Claude.ai custom connectors** use — that flow is
+  fully automatic and has no field to type a client_id into, so it
+  self-registers, then runs authorize/token. Adding a connector on Claude web
+  is therefore just: paste the `/mcp` URL, log in with the API key. The
+  DCR-issued client_id is self-verifying (a random half + truncated HMAC, see
+  `_issue_client_id`), so it needs no store and survives restarts. The
+  client_id — static or DCR — is never a security boundary; the API key at the
+  login page plus PKCE is. Both `authorize` and `token` accept a DCR client_id
+  via `_client_id_ok`.
 
 ## `.env` line endings
 
