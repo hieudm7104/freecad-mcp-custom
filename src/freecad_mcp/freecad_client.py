@@ -89,7 +89,7 @@ class FreeCADConnection:
 
     def get_active_screenshot(
         self,
-        view_name: str = "Isometric",
+        view_name: str | None = "Isometric",
         width: int | None = None,
         height: int | None = None,
         focus_object: str | None = None,
@@ -99,6 +99,15 @@ class FreeCADConnection:
         except Exception as e:
             logger.error(f"Error getting screenshot: {e}")
             return None
+
+    def reset_view(self, view_name: str = "Isometric") -> dict[str, Any]:
+        return self.server.reset_view(view_name)
+
+    def orbit_camera(self, delta_azimuth: float, delta_elevation: float) -> dict[str, Any]:
+        return self.server.orbit_camera(delta_azimuth, delta_elevation)
+
+    def zoom_camera(self, factor: float) -> dict[str, Any]:
+        return self.server.zoom_camera(factor)
 
     def get_objects(self, doc_name: str) -> list[dict[str, Any]]:
         return self.server.get_objects(doc_name)
@@ -111,6 +120,12 @@ class FreeCADConnection:
 
     def list_documents(self) -> list[str]:
         return self.server.list_documents()
+
+    def get_active_document(self) -> str | None:
+        return self.server.get_active_document()
+
+    def activate_document(self, doc_name: str) -> dict[str, Any]:
+        return self.server.activate_document(doc_name)
 
     def run_fem_analysis(self, doc_name: str, analysis_name: str, timeout: int = 600) -> dict[str, Any]:
         # Both queueing and solving can consume `timeout` seconds each.

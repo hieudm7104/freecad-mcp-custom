@@ -1,3 +1,10 @@
 __pycache__/
 .venv/
 .pytest_cache/
+
+# Live secrets for this deployment: MCP/OAuth API keys and MinIO root
+# credentials. `.env.example` is the committed template.
+.env
+
+# Contains live API keys for this deployment's ChatGPT connectors.
+docs/chatgpt-connectors.md

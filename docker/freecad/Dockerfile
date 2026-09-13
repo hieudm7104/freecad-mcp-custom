@@ -1,8 +1,9 @@
-FROM ubuntu:24.04
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         freecad \
         xvfb \
+        xauth \
         mesa-utils \
         libgl1-mesa-dri \
         ca-certificates \

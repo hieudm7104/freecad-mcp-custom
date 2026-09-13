@@ -723,6 +723,7 @@ def _run_streamable_http(port: int) -> None:
     import os
 
     import uvicorn
+    from mcp.server.transport_security import TransportSecuritySettings
 
     from .http_auth import ApiKeyMiddleware
 
@@ -731,8 +732,64 @@ def _run_streamable_http(port: int) -> None:
         raise SystemExit(
             "FREECAD_MCP_API_KEY must be set to use --transport streamable-http"
         )
-    app = mcp.streamable_http_app()
-    app.add_middleware(ApiKeyMiddleware, api_key=api_key)
+
+    # Registered before the app is built (the tool list is baked in there),
+    # and only when MinIO is configured — without it the server keeps exactly
+    # the tool set it had before.
+    from . import storage
+
+    if storage.is_configured():
+        from .storage_tools import register_storage_tools
+
+        register_storage_tools(mcp, get_freecad_connection)
+        logger.info(
+            f"Object storage tools enabled (bucket '{storage.bucket_name()}' "
+            f"on {storage.endpoint()})"
+        )
+
+    # The mcp SDK's streamable_http_app() defaults to host="127.0.0.1", which
+    # auto-enables DNS-rebinding protection that rejects any request whose
+    # Host header isn't localhost/127.0.0.1 (HTTP 421) — exactly what a
+    # remote/Dockerized deployment behind a real hostname (e.g. a Cloudflare
+    # Tunnel) sends. That protection guards against browser-based clients
+    # implicitly trusting same-origin/cookie auth; it's redundant here since
+    # every request must already carry a valid API key or OAuth bearer token
+    # (see ApiKeyMiddleware) regardless of Host, so disable it.
+    app = mcp.streamable_http_app(
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    )
+
+    oauth_client_id = os.environ.get("FREECAD_MCP_OAUTH_CLIENT_ID")
+    verify_token = None
+    if oauth_client_id:
+        from .oauth import register_oauth_routes, verify_token as _verify_token
+
+        register_oauth_routes(app, api_key=api_key, client_id=oauth_client_id)
+        verify_token = _verify_token
+        logger.info(
+            f"OAuth shim enabled for MCP-client OAuth flows (client_id={oauth_client_id})"
+        )
+
+    # The human-facing live-view page is opt-in and off by default: an open
+    # browser tab polls a screenshot continuously, which is real load on the
+    # FreeCAD/Blender GUI process (see docs/docker.md). Set
+    # FREECAD_MCP_PREVIEW=1 to serve it. The MCP tools are unaffected either
+    # way — this only controls the /preview* routes.
+    from .preview import preview_enabled, register_preview_routes
+
+    serve_preview = preview_enabled()
+    if serve_preview:
+        register_preview_routes(app, api_key=api_key, get_connection=get_freecad_connection)
+        logger.info("Live preview page enabled at /preview")
+    else:
+        logger.info("Live preview page disabled (set FREECAD_MCP_PREVIEW=1 to enable)")
+
+    app.add_middleware(
+        ApiKeyMiddleware,
+        api_key=api_key,
+        verify_token=verify_token,
+        allow_preview=serve_preview,
+    )
     logger.info(f"Serving streamable-http on 0.0.0.0:{port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
 

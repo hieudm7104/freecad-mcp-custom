@@ -1,8 +1,7 @@
 """API-key auth for the streamable-http transport.
 
-stdio transport (the default, used by local/uvx clients) never goes through
-this file — it only matters when the MCP server is exposed over HTTP, e.g.
-from the Docker setup in docker-compose.yml.
+Adapted from ``src/freecad_mcp/http_auth.py`` in this repo — same design.
+See that file for the fuller design notes.
 """
 
 import hmac
@@ -15,24 +14,16 @@ from starlette.responses import JSONResponse
 _UNAUTHENTICATED_PATHS = {"/oauth/authorize", "/oauth/token"}
 
 
-def _is_preview_path(path: str) -> bool:
-    return path == "/preview" or path == "/preview.png" or path.startswith("/preview/")
-
-
 def _is_public_path(path: str, allow_preview: bool) -> bool:
     # /.well-known/* is always meant to be publicly readable (RFC 8414,
-    # RFC 9728) — clients probe it before they have a token.
-    #
-    # /preview* is exempt from the *header* check only, and only when those
-    # routes are actually being served: every one of them checks the same API
-    # key itself, as a "?key=" query parameter, because a browser <img>/fetch
-    # on a plain page can't set custom headers (see preview.py). Matched by
-    # prefix so the Blender-tab proxy routes (/preview/blender*) are covered
-    # too. With the preview disabled the exemption goes away with it, so those
-    # paths answer 401 like anything else rather than 404.
+    # RFC 9728) — clients probe it before they have a token. /preview* is
+    # exempt from the *header* check only, and only while those routes are
+    # actually served: each one checks the same API key itself as a "?key="
+    # query parameter, because they're loaded by an <img> tag/proxy that
+    # can't set headers (preview_api.py).
     if path in _UNAUTHENTICATED_PATHS or path.startswith("/.well-known/"):
         return True
-    return allow_preview and _is_preview_path(path)
+    return allow_preview and (path == "/preview.png" or path.startswith("/preview/"))
 
 
 class ApiKeyMiddleware(BaseHTTPMiddleware):

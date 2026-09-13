@@ -31,7 +31,12 @@ from rpc_server.parts_library import get_parts_list, insert_part_from_library
 from rpc_server.property_mapper import Object
 from rpc_server.serialize import serialize_object
 from rpc_server.settings import load_settings, save_settings
-from rpc_server.view_manager import save_active_screenshot
+from rpc_server.view_manager import (
+    apply_view_orientation,
+    orbit_camera as _orbit_camera_impl,
+    save_active_screenshot,
+    zoom_camera as _zoom_camera_impl,
+)
 
 rpc_server_thread = None
 rpc_server_instance = None
@@ -419,12 +424,60 @@ class FreeCADRPC:
             lambda: list(FreeCAD.listDocuments().keys()), "list_documents"
         )
 
+    def get_active_document(self) -> str | None:
+        """Name of the document currently active in the GUI, or None."""
+        return _query_on_gui(
+            lambda: (FreeCAD.ActiveDocument.Name if FreeCAD.ActiveDocument else None),
+            "get_active_document",
+        )
+
+    def activate_document(self, doc_name: str) -> dict[str, Any]:
+        """Switch which document is active in the GUI (e.g. for the live preview page)."""
+        res = dispatch_to_gui(
+            lambda: self._activate_document(doc_name),
+            operation_name="activate_document",
+        )
+        if _ok(res):
+            return {"success": True, "message": f"Document '{doc_name}' activated."}
+        return _err(res)
+
+    def reset_view(self, view_name: str = "Isometric") -> dict[str, Any]:
+        """Force the active view back to a canned orientation (e.g. after
+        free-form orbiting via ``orbit_camera``) and re-fit it."""
+        res = dispatch_to_gui(
+            lambda: self._reset_view(view_name),
+            operation_name="reset_view",
+        )
+        if _ok(res):
+            return {"success": True}
+        return _err(res)
+
+    def orbit_camera(self, delta_azimuth: float, delta_elevation: float) -> dict[str, Any]:
+        """Incrementally rotate the active view's camera (mouse-drag orbit)."""
+        res = dispatch_to_gui(
+            lambda: self._orbit_camera(delta_azimuth, delta_elevation),
+            operation_name="orbit_camera",
+        )
+        if _ok(res):
+            return {"success": True}
+        return _err(res)
+
+    def zoom_camera(self, factor: float) -> dict[str, Any]:
+        """Scale the active view's zoom level by *factor* (mouse-wheel zoom)."""
+        res = dispatch_to_gui(
+            lambda: self._zoom_camera(factor),
+            operation_name="zoom_camera",
+        )
+        if _ok(res):
+            return {"success": True}
+        return _err(res)
+
     def get_parts_list(self):
         return get_parts_list()
 
     def get_active_screenshot(
         self,
-        view_name: str = "Isometric",
+        view_name: str | None = "Isometric",
         width: int | None = None,
         height: int | None = None,
         focus_object: str | None = None,
@@ -519,6 +572,38 @@ class FreeCADRPC:
     def _insert_part_from_library(self, relative_path):
         try:
             insert_part_from_library(relative_path)
+            return True
+        except Exception as e:
+            return str(e)
+
+    def _activate_document(self, doc_name):
+        try:
+            if doc_name not in FreeCAD.listDocuments():
+                return f"Document '{doc_name}' not found"
+            FreeCADGui.setActiveDocument(doc_name)
+            return True
+        except Exception as e:
+            return str(e)
+
+    def _reset_view(self, view_name):
+        try:
+            view = FreeCADGui.ActiveDocument.ActiveView
+            apply_view_orientation(view, view_name)
+            view.fitAll()
+            return True
+        except Exception as e:
+            return str(e)
+
+    def _orbit_camera(self, delta_azimuth, delta_elevation):
+        try:
+            _orbit_camera_impl(delta_azimuth, delta_elevation)
+            return True
+        except Exception as e:
+            return str(e)
+
+    def _zoom_camera(self, factor):
+        try:
+            _zoom_camera_impl(factor)
             return True
         except Exception as e:
             return str(e)

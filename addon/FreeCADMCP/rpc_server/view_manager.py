@@ -1,5 +1,6 @@
 """Active-view orientation, sizing, and screenshot capture."""
 
+import re
 from typing import Any
 
 import FreeCAD
@@ -93,12 +94,18 @@ def apply_view_orientation(view: Any, view_name: str) -> None:
 
 def save_active_screenshot(
     save_path: str,
-    view_name: str = "Isometric",
+    view_name: str | None = "Isometric",
     width: int | None = None,
     height: int | None = None,
     focus_object: str | None = None,
 ):
     """Save a PNG of the active view to ``save_path``.
+
+    ``view_name`` may be ``None``/``""`` to capture whatever the camera's
+    current orientation/zoom already is, without forcing a canned view or
+    re-fitting — used by the live-preview page (``preview.py``) so a caller
+    driving the camera directly via ``orbit_camera``/``zoom_camera`` doesn't
+    get overridden on the next poll.
 
     Returns ``True`` on success, or an error string on failure (preserves the
     legacy GUI-handler return contract).
@@ -108,7 +115,8 @@ def save_active_screenshot(
         if not hasattr(view, "saveImage"):
             return "Current view does not support screenshots"
 
-        apply_view_orientation(view, view_name)
+        if view_name:
+            apply_view_orientation(view, view_name)
 
         focused_selection = False
         # The resolved object we frame on (when focus_object is given), kept so
@@ -128,7 +136,10 @@ def save_active_screenshot(
                 FreeCADGui.Selection.clearSelection()
             else:
                 view.fitAll()
-        else:
+        elif view_name:
+            # Only refit when a canned orientation was just forced above —
+            # otherwise this would silently undo a caller's custom
+            # orbit/zoom on every poll.
             view.fitAll()
 
         _flush_gui_events()
@@ -141,8 +152,13 @@ def save_active_screenshot(
             FreeCADGui.Selection.addSelection(focus_target)
             FreeCADGui.SendMsgToActiveView("ViewSelection")
             FreeCADGui.Selection.clearSelection()
-        else:
+        elif view_name:
             view.fitAll()
+        else:
+            # Same redraw-forcing need as the fitAll() above, but without
+            # touching framing/zoom: re-apply the camera's own current
+            # orientation as a no-op that still nudges Coin3D to redraw.
+            view.setCameraOrientation(view.getCameraOrientation())
         resolved_width, resolved_height = _resolve_screenshot_size(view, width, height)
         # On Wayland the offscreen GL contexts used by the default saveImage()
         # method render solid black; "Framebuffer" reads back the on-screen GL
@@ -159,3 +175,61 @@ def save_active_screenshot(
         return True
     except Exception as e:
         return str(e)
+
+
+def _camera_size_field(cam_str: str) -> tuple[str, float] | None:
+    """Return (field_name, value) for the camera's zoom-controlling field.
+
+    Orthographic cameras (FreeCAD's default) use ``height``; perspective
+    cameras use ``heightAngle``. Returns None if neither is found.
+    """
+    m = re.search(r"\b(height|heightAngle)\s+([-\d.eE]+)", cam_str)
+    if not m:
+        return None
+    return m.group(1), float(m.group(2))
+
+
+def _set_camera_size(view: Any, field: str, value: float) -> None:
+    new_cam = re.sub(
+        rf"\b{field}(\s+)[-\d.eE]+",
+        lambda m: f"{field}{m.group(1)}{value}",
+        view.getCamera(),
+        count=1,
+    )
+    view.setCamera(new_cam)
+
+
+def orbit_camera(delta_azimuth_deg: float, delta_elevation_deg: float) -> None:
+    """Incrementally rotate the active view's camera (mouse-drag orbit).
+
+    ``delta_azimuth_deg`` rotates around the world's vertical (Z) axis;
+    ``delta_elevation_deg`` tilts around the camera's current right axis —
+    a "turntable"-style orbit, not a full trackball. Re-fits the view
+    afterward so the model stays framed as the camera moves around it, but
+    restores the caller's previous zoom level first (``fitAll`` resets zoom
+    to whatever frames the whole scene), so repeated small calls (as driven
+    by mouse-drag input on the live preview page) orbit around the model
+    instead of it drifting/rescaling on every step.
+    """
+    view = FreeCADGui.ActiveDocument.ActiveView
+    size = _camera_size_field(view.getCamera())
+
+    rot = view.getCameraOrientation()
+    right = rot.multVec(FreeCAD.Vector(1, 0, 0))
+    yaw = FreeCAD.Rotation(FreeCAD.Vector(0, 0, 1), delta_azimuth_deg)
+    pitch = FreeCAD.Rotation(right, delta_elevation_deg)
+    view.setCameraOrientation(yaw.multiply(pitch.multiply(rot)))
+    view.fitAll()
+
+    if size is not None:
+        _set_camera_size(view, *size)
+
+
+def zoom_camera(factor: float) -> None:
+    """Scale the active view's zoom level by *factor* (<1 zooms in, >1 out)."""
+    view = FreeCADGui.ActiveDocument.ActiveView
+    size = _camera_size_field(view.getCamera())
+    if size is None:
+        raise ValueError("Active camera has no height/heightAngle field to zoom")
+    field, value = size
+    _set_camera_size(view, field, value * factor)

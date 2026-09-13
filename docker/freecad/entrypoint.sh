@@ -17,4 +17,17 @@ if [ ! -e "$SETTINGS_DIR/freecad_mcp_settings.json" ]; then
 fi
 
 export LIBGL_ALWAYS_SOFTWARE=1
-exec xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" freecad "$@"
+
+# Run Xvfb directly instead of via xvfb-run: on this base image xvfb-run's
+# SIGUSR1 ready-handshake with Xvfb never fires, so it hangs forever before
+# ever launching FreeCAD. Start Xvfb ourselves and just wait for its socket.
+DISPLAY_NUM=99
+export DISPLAY=":${DISPLAY_NUM}"
+Xvfb "$DISPLAY" -screen 0 1280x1024x24 -nolisten tcp &
+
+for i in $(seq 1 50); do
+    [ -e "/tmp/.X11-unix/X${DISPLAY_NUM}" ] && break
+    sleep 0.2
+done
+
+exec freecad "$@"

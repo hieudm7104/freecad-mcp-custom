@@ -21,11 +21,30 @@ services:
       - "freecad"
     environment:
       - FREECAD_MCP_API_KEY=${FREECAD_MCP_API_KEY:?set FREECAD_MCP_API_KEY in .env}
+      - FREECAD_MCP_OAUTH_CLIENT_ID=${FREECAD_MCP_OAUTH_CLIENT_ID:-}
+      # Object-storage tools (save/load projects) register only when these
+      # are set — see src/freecad_mcp/storage.py.
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-}
+      - MINIO_BUCKET=${MINIO_BUCKET:-cad}
+      # Human-facing live-view page at /preview. Off: an open tab polls a
+      # screenshot continuously, which is sustained load on the FreeCAD and
+      # Blender GUI processes for something only a human watching a browser
+      # needs. Set to 1 here *and* BLENDER_MCP_PREVIEW=1 on the blender-mcp
+      # service to bring it back (the page lives here, the Blender viewport
+      # routes live there). MCP tools are unaffected by this either way.
+      - FREECAD_MCP_PREVIEW=0
+      # Only used by that page: it proxies the Blender tab's viewport calls
+      # to blender-mcp over this network, so the browser stays on one origin
+      # and never sees the key below.
+      - BLENDER_MCP_URL=http://blender-mcp:8000
+      - BLENDER_MCP_API_KEY=${BLENDER_MCP_API_KEY:-}
     volumes:
       - freecad_data:/data
     ports:
       - "${MCP_PORT:-8000}:8000"
-    depends_on: [freecad]
+    depends_on: [freecad, minio]
     networks: [mcpnet]
     restart: unless-stopped
 
@@ -35,11 +54,124 @@ services:
       dockerfile: docker/render/Dockerfile
     volumes:
       - freecad_data:/data
+      # `docker compose run --rm` throws away the container (and anything
+      # written under $HOME) after every render. Without this, Cycles'
+      # OptiX/CUDA JIT kernel cache never survives between invocations, so
+      # a brand-new GPU generation (no kernel precompiled into this Blender
+      # build) pays its ~5-minute JIT-compile cost on every single render
+      # instead of just the first.
+      - render_cache:/root/.cache
+    environment:
+      - CUDA_CACHE_PATH=/root/.cache/nv/ComputeCache
+      - OPTIX_CACHE_PATH=/root/.cache/nv/OptixCache
     networks: [mcpnet]
     profiles: ["render"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  blender:
+    build:
+      context: .
+      dockerfile: docker/blender/Dockerfile
+    volumes:
+      # Screenshots (and any asset-download tool, if those ever get enabled)
+      # are written by the addon in *this* container to a path the
+      # `blender-mcp` container then reads back — they only agree on that
+      # path because both mount the same volume at the same mount point and
+      # both set TMPDIR there. Without this, `get_viewport_screenshot`
+      # fails with "Screenshot file was not created": the addon really did
+      # write the file, just into a filesystem the other container can't see.
+      - blender_tmp:/tmp/blendermcp
+      # The same volume FreeCAD/`mcp`/`render` use: lets Blender save .blend
+      # files where blender-mcp's storage tools can upload them, and lets it
+      # import meshes FreeCAD exported there.
+      - freecad_data:/data
+    environment:
+      - TMPDIR=/tmp/blendermcp
+    networks: [mcpnet]
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  blender-mcp:
+    build:
+      context: .
+      dockerfile: docker/blender-mcp/Dockerfile
+    environment:
+      - BLENDER_HOST=blender
+      - BLENDER_PORT=9876
+      - BLENDER_MCP_API_KEY=${BLENDER_MCP_API_KEY:?set BLENDER_MCP_API_KEY in .env}
+      - BLENDER_MCP_OAUTH_CLIENT_ID=${BLENDER_MCP_OAUTH_CLIENT_ID:-}
+      # Validates scripts before running them in Blender (blocks direct file
+      # I/O, subprocess/network access, persistent-after-exit code) — see
+      # https://github.com/ahujasid/blender-mcp#safe-mode. On by default here
+      # since this instance is reachable from the internet.
+      - BLENDER_MCP_SAFE_MODE=1
+      # Viewport routes for the preview page's Blender tab — off, and only
+      # useful together with FREECAD_MCP_PREVIEW=1 on the `mcp` service,
+      # which is what actually serves the page. See that comment.
+      - BLENDER_MCP_PREVIEW=0
+      - TMPDIR=/tmp/blendermcp
+      # Same storage bucket as the FreeCAD MCP server, so a mesh exported
+      # from FreeCAD can be listed and pulled in here (and vice versa).
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-}
+      - MINIO_BUCKET=${MINIO_BUCKET:-cad}
+    volumes:
+      - blender_tmp:/tmp/blendermcp
+      - freecad_data:/data
+    ports:
+      - "${BLENDER_MCP_PORT:-8002}:8000"
+    depends_on: [blender, minio]
+    networks: [mcpnet]
+    restart: unless-stopped
+
+  minio:
+    # Persistent storage for saved FreeCAD documents and Blender scenes —
+    # both apps otherwise keep everything in RAM only, and the /data volume
+    # they write to is invisible from outside Docker.
+    #
+    # quay.io is MinIO's own registry; the Docker Hub `minio/minio` mirror
+    # now refuses pulls ("repository does not exist"). Pinned rather than
+    # `latest` so a future console/API change can't land unannounced.
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:?set MINIO_ROOT_USER in .env}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+    volumes:
+      - minio_data:/data
+    # Bound to loopback, not 0.0.0.0: these ports carry the root credentials
+    # and full read/write access to every saved project. Expose them further
+    # (Cloudflare Tunnel, Tailscale IP) only deliberately.
+    ports:
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks: [mcpnet]
+    restart: unless-stopped
 
 volumes:
   freecad_data:
+  render_cache:
+  blender_tmp:
+  minio_data:
 
 networks:
   mcpnet:
