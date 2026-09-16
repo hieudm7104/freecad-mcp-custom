@@ -220,6 +220,47 @@ existed. Fixed in `_frame_camera_and_light()` by computing the imported
 objects' real world-space bounding box and placing/aiming the camera (and
 sun light) from that, which works identically in background mode.
 
+## FreeCAD API reference for the connected model
+
+`get_freecad_api_reference(topic)` returns real FreeCAD Python API
+documentation, so the model writing `execute_code` scripts isn't recalling
+the API from memory. Topics: `index`, `fundamentals`, `geometry`,
+`parametric`, `advanced` (~3–11 KB each; served one at a time rather than as
+one ~36 KB blob).
+
+The text is vendored verbatim from [github/awesome-copilot][ac]'s
+`freecad-scripts` skill (MIT) into `src/freecad_mcp/reference/`. Its
+`gui-and-interface.md` is **not** vendored: it documents PySide dialogs,
+`QMessageBox` and `Gui.Control.showDialog()`, which assume a human at a
+FreeCAD window. Here FreeCAD runs under Xvfb with nobody to dismiss a modal
+dialog, so such code blocks indefinitely and can wedge the RPC connection
+these tools run over.
+
+[ac]: https://github.com/github/awesome-copilot/tree/main/skills/freecad-scripts
+
+What upstream can't know lives in `DEPLOYMENT_RULES`
+(`src/freecad_mcp/api_reference.py`) and is returned with `index` (plus a
+one-line reminder on every topic): no dialogs, `/data` is the only writable
+path, `/data` is *not* object storage (call the storage tools), documents
+live in RAM until saved, always `doc.recompute()`, units are mm,
+`Shape.exportStl` rather than STEP for Blender, `setActiveDocument` not
+`activateDocument`, and `include_screenshot=False` on intermediate steps.
+
+**It's a tool rather than an MCP prompt deliberately.** This server also
+exposes an `asset_creation_strategy` prompt, but connector-style clients
+(ChatGPT's connector UI) don't surface MCP prompts at all, so that guidance
+plausibly never reaches the model — tools are the only channel every client
+uses. (That prompt's `description` was also empty, since FastMCP reads it
+from the function docstring and there wasn't one; it now has one.)
+
+Verified against the FreeCAD 1.0.0 actually running here rather than taken
+on trust: every `Part.make*` and shape method the docs use exists,
+`Units.Quantity` and `Part::Feature` + `recompute` behave as documented, a
+boolean cut produced the geometrically correct volume, and the docs use
+`App.Vector` correctly. The deciding spot-check was that they say
+`setActiveDocument` and never `activateDocument` — the exact call this
+project originally got wrong by guessing.
+
 ## Live preview page
 
 > **Disabled by default.** The routes below are only served when

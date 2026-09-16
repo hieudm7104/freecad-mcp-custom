@@ -172,6 +172,38 @@ render, and a live-controlled Blender instance via a vendored
   login page plus PKCE is. Both `authorize` and `token` accept a DCR client_id
   via `_client_id_ok`.
 
+## FreeCAD API reference tool (2026-09-16)
+
+`get_freecad_api_reference(topic)` serves real FreeCAD Python API docs to the
+connected model on demand. It exists because `execute_code` is where this
+server's power is *and* where a model guessing at the FreeCAD API invents
+methods — the same failure that produced `FreeCADGui.activateDocument` here.
+
+- **Vendored** from github/awesome-copilot's `freecad-scripts` skill (MIT),
+  verbatim, in `src/freecad_mcp/reference/` — see `NOTICE.md` there.
+  `gui-and-interface.md` is **deliberately not vendored**: PySide dialogs,
+  `QMessageBox` and `Gui.Control.showDialog()` assume a human at the window,
+  and here a modal dialog blocks forever with nobody to dismiss it and can
+  wedge the RPC connection. Don't add it "for completeness".
+- **Served per topic**, not as one blob (index / fundamentals / geometry /
+  parametric / advanced; ~3–11 KB each) so the model pays only for what it
+  pulls. `DEPLOYMENT_RULES` in `src/freecad_mcp/api_reference.py` is the part
+  upstream can't know — headless/no dialogs, `/data` is the only writable
+  place, `/data` is *not* MinIO, always `recompute()`, mm units, STL-not-STEP
+  for Blender, `setActiveDocument`.
+- **A tool, not a prompt, on purpose.** The server also exposes an
+  `asset_creation_strategy` MCP *prompt*, but connector-style clients
+  (ChatGPT's connector UI) never surface prompts, so that guidance likely
+  never reaches the model. Tools are the one channel every client uses. That
+  prompt's `description` was also empty (FastMCP takes it from the
+  docstring, which was missing) and is now filled in.
+- **Verified against the real FreeCAD 1.0.0** in this deployment, not just
+  assumed: every `Part.make*` and shape method the docs reference exists,
+  `Units.Quantity` and `Part::Feature`+`recompute` work, a boolean cut
+  returned the geometrically correct volume, and the docs correctly use
+  `App.Vector` (not `Part.Vector`). Spot-checked for the `setActiveDocument`
+  vs `activateDocument` distinction before trusting it at all.
+
 ## `.env` line endings
 
 If `.env` ever ends up with CRLF (`\r\n`) line endings again (e.g. from a

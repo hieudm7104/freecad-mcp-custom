@@ -32,7 +32,9 @@ from .operations import (
     reload_document_operation,
     run_fem_analysis_operation,
 )
+from . import api_reference
 from .prompt_text import ASSET_CREATION_STRATEGY
+from .responses import ToolResponse, text_response
 from .server_state import ServerState
 
 
@@ -691,8 +693,44 @@ def run_fem_analysis(
     )
 
 
+@mcp.tool(structured_output=False)
+def get_freecad_api_reference(topic: str = "index") -> ToolResponse:
+    """Look up real FreeCAD Python API documentation before writing execute_code.
+
+    Use this whenever a task needs `execute_code` for anything beyond a
+    trivial one-liner — building geometry, booleans, sketches, parametric
+    FeaturePython objects, arrays, measuring, FEM. It returns actual API
+    documentation instead of leaving you to recall the FreeCAD API from
+    memory, which is where invented method names come from.
+
+    Also returns the rules specific to *this* FreeCAD instance, which no
+    general FreeCAD documentation covers: it is headless under Xvfb with no
+    human present, so any dialog blocks forever and can hang this server;
+    only `/data` is writable; `/data` is not object storage; units are mm.
+    Read `topic="index"` first if you have not already.
+
+    Args:
+        topic: One of "index" (topic list + this deployment's rules),
+            "fundamentals" (documents, selection, units, properties),
+            "geometry" (Part: primitives, booleans, extrude/revolve/loft,
+            topology, Sketcher, Mesh), "parametric" (FeaturePython objects
+            and property types), or "advanced" (FEM, Path/CAM, mirror and
+            array recipes).
+
+    Returns:
+        The reference text for that topic.
+    """
+    try:
+        return text_response(api_reference.get(topic))
+    except Exception as e:
+        return text_response(str(e))
+
+
 @mcp.prompt()
 def asset_creation_strategy() -> str:
+    """How to drive FreeCAD through this server: inspect state first, prefer the
+    parts library, verify every edit, and keep screenshot traffic down. For the
+    FreeCAD Python API itself, call the get_freecad_api_reference tool."""
     return ASSET_CREATION_STRATEGY
 
 
