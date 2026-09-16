@@ -10,8 +10,9 @@ MCP server, and a MinIO bucket both MCP servers save projects into.
 
 ## Architecture
 
-- **`freecad`** — Debian (`debian:trixie-slim`) + FreeCAD, launched under a
-  manually-started `Xvfb` (a virtual display; the addon still needs
+- **`freecad`** — Debian (`debian:trixie-slim`) + FreeCAD **1.1.3 from the
+  official AppImage** (see "FreeCAD version" below for why not apt), launched
+  under a manually-started `Xvfb` (a virtual display; the addon still needs
   `FreeCADGui`/Coin3D for screenshots and views). Ubuntu 24.04 no longer
   packages `freecad` at all, and `xvfb-run`'s SIGUSR1 ready-handshake with
   `Xvfb` hangs forever on this base image, so `docker/freecad/entrypoint.sh`
@@ -22,11 +23,12 @@ MCP server, and a MinIO bucket both MCP servers save projects into.
   click. Not published to the host; only the `mcp` container can reach it.
 - **`mcp`** — the MCP server, `--transport streamable-http` gated by
   `FREECAD_MCP_API_KEY` (see `src/freecad_mcp/http_auth.py`), connecting to
-  `freecad` over the compose network. Also has its own headless FreeCAD CLI
-  install (`freecad-python3`, since Debian trixie dropped the old
-  `freecad-cmd` package; its `freecadcmd-python3` binary is symlinked to
-  `freecadcmd`) for `execute_code_headless`, which runs `freecadcmd` as a
-  local subprocess independent of the RPC connection.
+  `freecad` over the compose network. Also carries its own headless FreeCAD
+  CLI — `freecadcmd` from the same 1.1.3 AppImage, pinned to the same version
+  as the `freecad` service — for `execute_code_headless`, which runs it as a
+  local subprocess independent of the RPC connection. Only the binary is
+  used, always as a subprocess, so the AppImage's bundled Python 3.11 never
+  has to agree with this image's 3.12.
 - **`render`** — Ubuntu + Blender, run on demand (`docker compose run`), not a
   long-running service. Renders a model exported to the shared volume.
 - **`blender`** — a persistent, GUI Blender instance (Xvfb, same reasoning as
@@ -219,6 +221,56 @@ by actually opening the rendered image rather than just checking the file
 existed. Fixed in `_frame_camera_and_light()` by computing the imported
 objects' real world-space bounding box and placing/aiming the camera (and
 sun light) from that, which works identically in background mode.
+
+## FreeCAD version: 1.1.3 from the official AppImage
+
+The `freecad` and `mcp` services both install **FreeCAD 1.1.3** by
+downloading the official AppImage and running `--appimage-extract` on it
+(mounting an AppImage needs FUSE, which an unprivileged container doesn't
+have). `apt` is not an option: Debian trixie carries only `1.0.0+dfsg`, the
+original November-2024 release, and has no backports.
+
+Each Dockerfile pins the version in its own `ARG FC_VERSION` / `ARG FC_URL`.
+**Bump both together** — the two services read and write the same `.FCStd`
+files on the `/data` volume, and a document written by a newer FreeCAD and
+then opened by an older one is how data quietly degrades.
+
+Beyond being two years newer, the apt build was also *stripped*: it shipped
+**no CalculiX (`ccx`) and no `gmsh` anywhere on the image**, so
+`run_fem_analysis` had no solver and no mesher and could never have worked.
+The AppImage bundles both. (Third time here that a distro package turned out
+to be both old and missing pieces — see the Blender notes above.)
+
+Cost: the images grow from 2.56 GB to 4.66 GB (`freecad`) and 4.86 GB
+(`mcp`). The 783 MB download happens once per Dockerfile instead of being
+shared, deliberately: sharing it would couple the two builds' ordering to
+save a few GB on a 1.4 TB disk.
+
+### Upgrading safely
+
+The 1.0 → 1.1.3 move was rehearsed in a throwaway container with `/data`
+mounted read-only before anything live was touched, and all 16 RPC methods
+passed. Two results worth keeping in mind for the next bump:
+
+- **The camera code is the fragile part.** `view_manager.py` parses
+  `view.getCamera()`'s Coin3D string with a regex. Verify a bump by checking
+  the camera *position actually moves* and the screenshot bytes change — not
+  by trusting `{"success": true}`, which an orbit will happily return while
+  doing nothing.
+- **Documents round-trip both ways** between 1.0 and 1.1.3 with identical
+  geometry, so a rollback doesn't strand work. Opening a 1.0 document in 1.1
+  does add one `App::Point` named `Origin001` to the document's `Origin`
+  group (1.1's `App::Origin` gained an origin point); it's legitimate, 1.0
+  ignores it on the way back, but it makes `get_objects` return one more
+  object than before.
+
+If `get_view` starts answering "Cannot get screenshot in the current view
+type", the active document's `ActiveView` is a TechDraw page or spreadsheet
+(`MDIViewPagePy`), not a 3D view — the addon is correct to refuse.
+`FreeCADGui.setActiveDocument()` onto a document with a 3D view fixes it.
+Note that `activate_document` exists only as an addon RPC method and is
+**not** exposed as an MCP tool, so a connected model currently cannot do
+this for itself.
 
 ## FreeCAD API reference for the connected model
 

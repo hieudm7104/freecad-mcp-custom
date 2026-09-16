@@ -204,6 +204,63 @@ methods — the same failure that produced `FreeCADGui.activateDocument` here.
   `App.Vector` (not `Part.Vector`). Spot-checked for the `setActiveDocument`
   vs `activateDocument` distinction before trusting it at all.
 
+## FreeCAD 1.1.3 from the official AppImage (2026-09-16)
+
+Both `freecad` and `mcp` run **FreeCAD 1.1.3**, downloaded as the official
+AppImage and `--appimage-extract`ed in their Dockerfiles (mounting an
+AppImage needs FUSE, unavailable in an unprivileged container). They were on
+Debian trixie's `1.0.0+dfsg` — the original Nov-2024 release, with no
+backports available — so apt could never get past it.
+
+**Keep the two `ARG FC_VERSION`/`FC_URL` pairs in lockstep.** Both services
+read and write the same `.FCStd` files on `/data`; a document written by a
+newer FreeCAD and opened by an older one is how data silently degrades.
+
+Third time this pattern has bitten this project: the distro package is old
+and *stripped*. Here the apt build had **no `ccx` (CalculiX) and no `gmsh`
+anywhere on the image** (`find /` found nothing, `ccxBinaryPath` was empty),
+so `run_fem_analysis` could never actually solve or mesh — an advertised
+tool that was dead on arrival. The AppImage bundles both. Same shape as the
+apt Blender missing its CUDA/OptiX kernels.
+
+Cost: images went 2.56 GB → 4.66 GB (`freecad`) and 4.86 GB (`mcp`). The
+783 MB AppImage is downloaded once per Dockerfile rather than shared, which
+is deliberate — sharing it would couple the two builds' ordering for a few
+GB on a 1.4 TB disk.
+
+### What was verified before switching (in a throwaway container, `/data` read-only)
+
+- Addon loads, RPC auto-starts, `gui_dispatch` healthy; **16/16 RPC methods
+  pass**.
+- **Camera controls survive** — the `view_manager.py` regex that parses
+  `view.getCamera()`'s Coin3D string was the most brittle thing in the
+  upgrade. Confirmed by camera *position* actually changing (146.8,-141.8 →
+  185.7,92.5) and screenshot md5 differing at each step, not by trusting
+  `success: True` (the Blender orbit bug taught that lesson).
+- **Geometry identical across versions**: the gear reads 66132.2 mm³ /
+  66×66×34 bbox in both 1.0 and 1.1.3.
+- **Round-trips both ways**: a file saved by 1.1.3 reopens in 1.0 with the
+  same volume, so a rollback does not strand the data.
+- **One migration artifact**: opening a 1.0 document in 1.1 adds
+  `Origin001` (`App::Point`) — verified to be a legitimate member of
+  `Origin.OriginFeatures` (1.1's `App::Origin` gained an origin point).
+  Harmless, ignored on the way back to 1.0, but it means `get_objects`
+  returns one more object than it used to (17 → 18 for the gear).
+
+### `get_view` failing right after the upgrade was NOT a regression
+
+It returned "Cannot get screenshot in the current view type". Cause: the
+active document was one containing a **TechDraw page**, whose `ActiveView`
+is `MDIViewPagePy` — no `getCamera`, so the addon correctly refuses.
+`FreeCADGui.setActiveDocument(...)` onto a document with a 3D view makes
+`ActiveView` a `View3DInventorPy` again and screenshots work.
+
+This surfaced a real gap, unrelated to the version: **`activate_document`
+exists as an RPC method but is not exposed as an MCP tool**, so a connected
+model has no way to switch the active document itself — and the preview page
+that used to drive it is disabled. If an AI opens a TechDraw-bearing
+document, `get_view` stays broken for it with no recourse.
+
 ## `.env` line endings
 
 If `.env` ever ends up with CRLF (`\r\n`) line endings again (e.g. from a

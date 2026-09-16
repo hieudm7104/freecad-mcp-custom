@@ -1,15 +1,32 @@
 FROM python:3.12-slim
 
-# freecad-python3 provides a headless-only FreeCAD CLI (freecadcmd-python3)
-# used locally by execute_code_headless. This is independent of the full GUI
-# FreeCAD that runs in the separate "freecad" service and hosts the RPC
-# server. Debian trixie no longer ships a "freecad-cmd" package; the binary
-# is named freecadcmd-python3, so symlink it to the name freecad-mcp expects.
+# A headless FreeCAD CLI (freecadcmd) for execute_code_headless, independent
+# of the full GUI FreeCAD in the separate "freecad" service that hosts the RPC
+# server. Taken from the official AppImage rather than apt for the reasons in
+# docker/freecad/Dockerfile (trixie is stuck on 1.0.0+dfsg and ships no ccx or
+# gmsh at all) — and MUST stay on the same version as that service, since both
+# read and write the same .FCStd files on the /data volume.
+#
+# Only freecadcmd is ever invoked, and always as a subprocess, so the
+# AppImage's bundled Python 3.11 never has to agree with this image's 3.12.
+ARG FC_VERSION=1.1.3
+ARG FC_URL=https://github.com/FreeCAD/FreeCAD/releases/download/1.1.3/FreeCAD_1.1.3-Linux-x86_64-py311.AppImage
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        freecad-python3 \
+        curl \
+        libgl1 libglu1-mesa \
+        libxrender1 libxi6 libxcursor1 libxrandr2 libxinerama1 libxkbcommon-x11-0 \
+        libfontconfig1 libdbus-1-3 libegl1 libsm6 libice6 \
         ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -s /usr/lib/freecad/bin/freecadcmd-python3 /usr/local/bin/freecadcmd
+    && rm -rf /var/lib/apt/lists/*
+
+# --appimage-extract: mounting an AppImage needs FUSE, unavailable here.
+RUN curl -fsSL -o /tmp/fc.AppImage "$FC_URL" \
+    && chmod +x /tmp/fc.AppImage \
+    && cd /opt && /tmp/fc.AppImage --appimage-extract >/dev/null \
+    && mv /opt/squashfs-root /opt/freecad \
+    && rm -f /tmp/fc.AppImage \
+    && ln -s /opt/freecad/usr/bin/freecadcmd /usr/local/bin/freecadcmd
 
 RUN pip install --no-cache-dir uv
 
