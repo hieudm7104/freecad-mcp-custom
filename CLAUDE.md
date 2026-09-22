@@ -426,6 +426,41 @@ Things in it that are decisions, not accidents:
 - The preview proxy appends `?key=` **last**, so a browser-supplied `key`
   can never win.
 
+**Point `OPENAI_BASE_URL` at the endpoint's LAN/tailnet address, never its
+public hostname, when that endpoint is served from this same host.** The first
+configuration used `https://new-api.hieudm.site/v1`, which made the harness
+hairpin: container -> NAT -> internet -> Cloudflare edge -> the tunnel -> back
+into this host -> `new-api`. Measured from inside the container, six `fetch`
+calls: 861 ms, **10489 ms FAIL `UND_ERR_CONNECT_TIMEOUT`**, 1557 ms, ... —
+against 2-24 ms and 6/6 on `http://100.84.25.11:3000/v1`. The 10 s is undici's
+default connect timeout, which the `openai` SDK (pi-ai uses it under
+`openai-completions`) reports as `APIConnectionTimeoutError: Request timed
+out.` — a message that reads like the model was slow and is nothing of the
+kind. `new-api` listens on `100.84.25.11:3000` only, so `host-gateway` /
+`host.docker.internal` cannot reach it; if that tailnet address ever moves,
+join `new-api_new-api-network` as an external network and use
+`http://new-api:3000/v1` instead.
+
+**pi-ai hardcodes `maxRetries: 0`** on its OpenAI client and only retries when
+the caller passes `options.maxRetries` (`openai-completions.js` hands it to its
+own `retryProviderRequest`). Passing `models.streamSimple` straight through as
+`streamFn` therefore meant one dropped connection ended an entire tool-driving
+turn. The harness now wraps it with `maxRetries: 3`.
+
+**The system prompt has to name `freecad_get_freecad_api_reference`.** Watching
+a real run — "vẽ bánh răng bằng freecad đi" — the model went straight to
+`freecad_execute_code`, burned four attempts on `AttributeError: module 'Part'
+has no ...` and `TypeError: float() argument must be ...`, then gave up and
+left a plain cylinder named "Test" plus five stray `Gear1..Gear5` documents
+(`FreeCAD.newDocument` with an existing name silently makes a new one instead
+of failing). It never called the reference tool, because nothing asked it to:
+that guidance used to live in an MCP *prompt*, which connector-style clients
+never surface. After adding the line, the same request called
+`get_freecad_api_reference(topic="geometry")`, stayed in one document, and
+produced a genuine 24-tooth spur gear — one valid solid, 82 faces,
+110x110x25 mm, confirmed by looking at the render. The teeth are rectangular
+rather than involute; that is the model's ceiling, not the harness's.
+
 **Verified against a live endpoint on 2026-09-22.** `.env` now points at
 `OPENAI_BASE_URL=https://new-api.hieudm.site/v1` with
 `HARNESS_MODEL=nvidia/Qwen3.6-35B-A3B-NVFP4` (the key is in `.env`, which is

@@ -33,9 +33,23 @@ const BACKENDS = {
 } as const;
 type Backend = keyof typeof BACKENDS;
 
+// The api-reference line is not decoration. Watching a real run: asked for a
+// gear, the model went straight to freecad_execute_code and burned four
+// attempts on `AttributeError: module 'Part' has no ...` and
+// `TypeError: float() argument must be ...` before giving up and leaving a
+// plain cylinder named "Test" behind — plus five stray Gear1..Gear5
+// documents. freecad_get_freecad_api_reference exists precisely because a
+// model guessing at the FreeCAD API is this project's oldest failure mode
+// (see CLAUDE.md), and it was never called because nothing asked for it. The
+// MCP *prompt* that used to carry this guidance never reaches a client like
+// this one, so the system prompt is the only channel left.
 const SYSTEM_PROMPT = `You drive a headless FreeCAD (freecad_* tools) and a live Blender instance (blender_* tools) for the user.
 FreeCAD works in mm and Blender in m, so a 33 mm part imports into Blender as a 33-unit object.
-The user watches both viewports live next to this chat, so prefer making the change in the app over describing it.`;
+The user watches both viewports live next to this chat, so prefer making the change in the app over describing it.
+
+Before writing any non-trivial FreeCAD Python, call freecad_get_freecad_api_reference for the relevant topic (index, fundamentals, geometry, parametric, advanced). Guessing at the FreeCAD API wastes whole turns on AttributeError and TypeError; the reference is short and authoritative for the exact version running here.
+Work inside one document: freecad_create_document once, then reuse it. FreeCAD.newDocument with a name that already exists silently creates Gear1, Gear2, ... instead of failing, so a retry loop litters the session.
+Always recompute() after building geometry, and check the result (volume, bounding box, face count) before telling the user it is done.`;
 
 // --- model ----------------------------------------------------------------
 // Any OpenAI-compatible /v1/chat/completions endpoint. pi-ai's built-in
@@ -90,7 +104,15 @@ let agent: Agent | undefined;
 async function getAgent(): Promise<Agent> {
   return (agent ??= new Agent({
     initialState: { systemPrompt: SYSTEM_PROMPT, model, tools: await getTools() },
-    streamFn: models.streamSimple.bind(models),
+    // pi-ai hardcodes maxRetries: 0 on the OpenAI client and only retries when
+    // the caller asks (openai-completions.js passes options?.maxRetries to its
+    // own retryProviderRequest). Passing streamSimple straight through meant a
+    // single dropped connection ended the whole turn with
+    // "Request timed out." — undici's 10 s connect timeout, surfaced by the
+    // openai SDK as APIConnectionTimeoutError. A tool-driving turn is long and
+    // expensive to redo; three tries is cheap.
+    streamFn: (m, ctx, options) =>
+      models.streamSimple(m, ctx, { ...options, maxRetries: 3 }),
   }));
 }
 
