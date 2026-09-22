@@ -570,11 +570,15 @@ both public endpoints answer 200, and the whole chain was driven for real:
   of both the harness and the model**, straight over XML-RPC:
   `volume = 9361.0` against an expected 9361 for 37x23x11, bbox 37/23/11,
   6 faces, 1 solid.
-- **Tool surface**: 23 FreeCAD + 33 Blender = 56 tools, 56 unique names after
-  prefixing. `list_storage_files` / `upload_file_to_storage` /
+- **Tool surface**: 23 FreeCAD + **34** Blender = **57** tools, 57 unique names
+  after prefixing. `list_storage_files` / `upload_file_to_storage` /
   `download_file_from_storage` really do collide across the two servers and
-  the prefix really does resolve them. 0/56 failed `toToolDeclaration`, 0/56
-  failed pi-ai's real `validateToolArguments`.
+  the prefix really does resolve them. The schema check
+  (0 failed `toToolDeclaration`, 0 failed pi-ai's real
+  `validateToolArguments`) ran against the pre-deploy set of 56 — it predates
+  `render_image`, which is the 34th Blender tool and has not been through that
+  check. Any count of 33 Blender / 56 total anywhere in this file is from
+  before the render fold-in.
 - **Both preview panels were opened as images and looked at**, not just
   curl'd for a 200 — FreeCAD 1014x803, Blender 1000x858. An orbit changed the
   frame's md5, so it is not the `success: true` no-op this project has been

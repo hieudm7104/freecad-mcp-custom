@@ -780,7 +780,8 @@ Things worth knowing before changing it:
   and the result was checked over XML-RPC independently of both the harness
   and the model: `volume = 9361.0` vs an expected 9361 for a 37x23x11 box,
   bbox 37/23/11, 6 faces, 1 solid.
-- **56 tools merge cleanly** (23 FreeCAD + 33 Blender), 56 unique names
+- **57 tools merge cleanly** (23 FreeCAD + 34 Blender — the 34th is
+  `render_image`), 57 unique names
   after prefixing; the three genuinely colliding storage tools are resolved
   by it. 0/56 fail pi-ai's real argument validator.
 - **Both preview images were opened and inspected**, and an orbit changed the
