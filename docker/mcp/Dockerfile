@@ -1,11 +1,11 @@
 FROM python:3.12-slim
 
 # A headless FreeCAD CLI (freecadcmd) for execute_code_headless, independent
-# of the full GUI FreeCAD in the separate "freecad" service that hosts the RPC
-# server. Taken from the official AppImage rather than apt for the reasons in
-# docker/freecad/Dockerfile (trixie is stuck on 1.0.0+dfsg and ships no ccx or
-# gmsh at all) — and MUST stay on the same version as that service, since both
-# read and write the same .FCStd files on the /data volume.
+# of the full GUI FreeCAD in the separate "freecad_headless" service that
+# hosts the RPC server. Taken from the official AppImage rather than apt for
+# the reasons in docker/freecad/Dockerfile (trixie is stuck on 1.0.0+dfsg and
+# ships no ccx or gmsh at all) — and MUST stay on the same version as that
+# service, since both read and write the same .FCStd files on /data.
 #
 # Only freecadcmd is ever invoked, and always as a subprocess, so the
 # AppImage's bundled Python 3.11 never has to agree with this image's 3.12.

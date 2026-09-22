@@ -1,11 +1,15 @@
 # CLAUDE.md — Project Conventions for freecad-mcp-custom
 
 This is a fork of `neka-nat/freecad-mcp` that adds a Docker deployment
-(MCP over HTTP with API-key auth, headless FreeCAD, on-demand Blender
-render, and a live-controlled Blender instance via a vendored
-`ahujasid/blender-mcp`) on top of upstream. See
+(MCP over HTTP with API-key auth, headless FreeCAD, a live-controlled
+Blender instance via a vendored `ahujasid/blender-mcp`, and a chat harness
+serving a browser UI with both viewports live) on top of upstream. See
 [`docs/docker.md`](docs/docker.md) for the full architecture and
 [`README.md`](README.md) for the general project.
+
+**Service names changed on 2026-09-22** — everything written below that date
+uses the old ones. Read the mapping in "Service rename, render fold-in,
+harness + frontend" before trusting a container name in this file.
 
 ## Live deployment on this server
 
@@ -29,22 +33,29 @@ render, and a live-controlled Blender instance via a vendored
 - **`https://blender-mcp.hieudm.site`** is a second, separate MCP server —
   a vendored `ahujasid/blender-mcp` fork giving live control of a real,
   running Blender GUI instance (create/edit objects, materials, lights,
-  arbitrary Python, viewport screenshots), not the one-shot batch
-  `render`/`render.py` service. Same API-key/OAuth pattern as freecad-mcp,
-  on `BLENDER_MCP_PORT` (`8002`) → see the "Blender MCP integration" section
-  below for the whole story (why two containers, what broke, what's
-  disabled by default).
-- **The live preview page is DISABLED on this deployment** (2026-09-13, at the
-  user's request). `FREECAD_MCP_PREVIEW=0` on the `mcp` service and
-  `BLENDER_MCP_PREVIEW=0` on `blender-mcp` in `docker-compose.yml`; with those
-  off the routes aren't registered *and* `ApiKeyMiddleware` drops its
-  `/preview` exemption, so every `/preview*` path answers 401 even with a
-  valid key. Flip both to `1` and `docker compose up -d mcp blender-mcp` to
-  bring it back — no rebuild, the code ships in the image regardless. MCP
-  tools are unaffected either way (verified after disabling: 22 FreeCAD / 33
-  Blender tools still list over the public HTTPS endpoints, OAuth discovery
-  still 200s unauthenticated). Everything below describes it as it works when
-  enabled.
+  arbitrary Python, viewport screenshots). Same API-key/OAuth pattern as
+  freecad-mcp, on `BLENDER_MCP_PORT` (`8002`) → see the "Blender MCP
+  integration" section below for the whole story (why two containers, what
+  broke, what's disabled by default). As of 2026-09-22 it also owns the
+  `render_image` tool that used to be the separate `render` container.
+- **The live preview page was DISABLED, and is ON again since 2026-09-22.**
+  History, because the reason it was off still applies: it was turned off on
+  2026-09-13 at the user's request, by setting `FREECAD_MCP_PREVIEW=0` on the
+  `mcp` service and `BLENDER_MCP_PREVIEW=0` on `blender-mcp`; with those off
+  the routes aren't registered *and* `ApiKeyMiddleware` drops its `/preview`
+  exemption, so every `/preview*` path answers 401 even with a valid key
+  (verified then that MCP tools are unaffected either way: 22 FreeCAD / 33
+  Blender tools still listed over the public HTTPS endpoints and OAuth
+  discovery still 200'd unauthenticated). Both flags are `1` again on
+  `mcp-freecad`/`mcp-blender` because the new frontend's preview panel is
+  those same routes, proxied — turning them off turns the panel dark.
+  **The cost didn't go away**: a watching browser tab pulls a fresh
+  screenshot out of each GUI process, both GUIs have a single command queue,
+  so frames compete with MCP tool calls. That's what the self-paced polling
+  below exists to contain, and why the Pause button is still the one
+  guaranteed way to take the load off. Flipping either flag back to `0` and
+  `docker compose up -d mcp-freecad mcp-blender` still works — no rebuild,
+  the code ships in the image regardless.
 - **`https://freecad-mcp.hieudm.site/preview?key=<FREECAD_MCP_API_KEY>`** is a
   human-facing live-view page (`src/freecad_mcp/preview.py`) — auto-refreshing
   screenshot of whatever's currently active in FreeCAD. No view-angle
@@ -67,7 +78,10 @@ render, and a live-controlled Blender instance via a vendored
   server **proxies** them at `/preview/blender*` using `BLENDER_MCP_URL` /
   `BLENDER_MCP_API_KEY` from docker-compose.yml — so the browser stays on one
   origin (no CORS on the control POSTs) and the Blender key never reaches it.
-  Unset `BLENDER_MCP_API_KEY` on the `mcp` service and the tab disappears.
+  Unset `BLENDER_MCP_API_KEY` on the `mcp-freecad` service and the tab
+  disappears. The browser frontend's preview panel (see below) is the same
+  routes again, proxied a second time by the `harness` container so the page
+  can be served without a key in the URL at all.
 
   **Frame polling is self-paced on purpose** — don't "simplify" it back to a
   `setInterval`. The original flat 2-second timer asked for frames faster
@@ -106,8 +120,10 @@ render, and a live-controlled Blender instance via a vendored
   sets it only when `libGLX_nvidia.so.0` exists and otherwise keeps the
   software fallback — forcing the nvidia vendor without those libraries
   leaves Blender with *no* usable GL rather than a slow one.
-  `docker/freecad/entrypoint.sh` still forces software GL and the `freecad`
-  service has no GPU reservation. Worth knowing: measured over 30 s with
+  `docker/freecad/entrypoint.sh` still forces software GL and the
+  `freecad-headless` service has no GPU reservation at all — which is also
+  the answer to "does FreeCAD eat VRAM": it holds **0 MiB**, it just burns
+  CPU instead. Worth knowing: measured over 30 s with
   **nothing calling it at all**, that container burns 22.2 CPU-seconds —
   **0.74 cores continuously, 24/7** — and `top -H` shows dozens of
   `llvmpipe` threads with ~40 minutes of accumulated CPU each. FreeCAD
@@ -138,6 +154,18 @@ render, and a live-controlled Blender instance via a vendored
   `view_name` being truthy. Every other caller (the `get_view` tool,
   `create_object`'s screenshot, etc.) still always passes a real view name
   and is unaffected.
+
+  **One exception, added 2026-09-22**: `preview_png` passes `"Isometric"` for
+  the *first* frame of a document it has not shown before, keyed on the
+  document name in a per-process set. A freshly created document's camera is
+  wherever FreeCAD left it, which is not looking at the geometry — so the
+  panel served a 200, a valid PNG of the right size, and a **blank image**,
+  indistinguishable from a working panel that has not drawn yet. (Found the
+  only way these things ever are here: by opening the PNG instead of reading
+  the status code.) Keying on the name means a later orbit is still never
+  undone. It costs one extra `get_active_document()` round trip per frame — a
+  bare attribute read, next to nothing beside the screenshot on the same
+  queue.
 
   `FreeCADGui.setActiveDocument(name)` — used by `activate_document` — is
   **not** `activateDocument`, which doesn't exist on `FreeCADGui` and was
@@ -171,6 +199,370 @@ render, and a live-controlled Blender instance via a vendored
   client_id — static or DCR — is never a security boundary; the API key at the
   login page plus PKCE is. Both `authorize` and `token` accept a DCR client_id
   via `_client_id_ok`.
+
+## Service rename, render fold-in, harness + frontend (2026-09-22)
+
+| old service | new service | build folder (unchanged) |
+| --- | --- | --- |
+| `freecad` | `freecad-headless` | `docker/freecad/` |
+| `mcp` | `mcp-freecad` | `docker/mcp/` |
+| `blender` | `blender-cli` | `docker/blender/` |
+| `blender-mcp` | `mcp-blender` | `docker/blender-mcp/` |
+| `render` | *gone* — folded into `blender-cli` | `docker/render/` deleted |
+| `minio` | `minio` | (image, no build) |
+| — | `harness` (new) | `harness/Dockerfile` |
+
+**Hyphens, not underscores, because these are hostnames.** `mcp-freecad`
+passes its `--host` through `validators.hostname()` (`_validate_host` in
+`src/freecad_mcp/server.py`), which rejects `_` — underscores aren't legal in
+an RFC-1123 host name — so `--host freecad_headless` exits 2 and, under
+`restart: unless-stopped`, crash-loops forever: no tools, no `/preview`, and
+every harness chat 503s. Don't relax the validator to get underscores back.
+
+**The `docker/` folders deliberately keep their old names.** Nothing resolves
+a service by its build path, and renaming `docker/blender/` would break
+`git log --follow` on `addon.py` — 3,900 vendored lines carrying exactly one
+local patch, where diffing against upstream history is the only thing that
+keeps that patch from being lost on the next vendor bump. The compose file
+carries the mapping in a header comment for the same reason.
+
+Old names survive in the prose of every section below dated before this one.
+They were not mass-renamed: those sections are a record of what happened, and
+rewriting them would make the history lie about the names in play at the
+time. Hostnames, env vars and commands *are* all current.
+
+**The first `up` after this rename needs `--remove-orphans`**: the containers
+running under the old names are orphans of the project now and still hold
+8001/8002, so a plain `docker compose up -d` leaves them up and then fails
+with `bind for 0.0.0.0:8001 failed: port is already allocated`. It also stops
+them, and stopping `freecad-headless`/`blender-cli` discards every document
+and scene that was never saved to MinIO — save first.
+
+### The `render` service is gone; `render_image` replaced it
+
+`docker/render/` (its own Dockerfile + a ~200-line `render.py` driven by
+`docker compose --profile render run --rm render …`) booted a second Blender,
+imported a file and rendered it — blind to the materials, lights and camera
+the agent had just built in the *live* instance, which is the scene a user
+actually wants a picture of. It is now one MCP tool on the Blender server,
+`render_image` (`docker/blender-mcp/render_tools.py`), which sends a render
+script down the existing `execute_code` socket into `blender-cli`.
+
+Only two things from `render.py` were worth keeping and both were kept: the
+file-format enum override table (`.jpg` → `"JPEG"`, `.tif` → `"TIFF"`,
+`.exr` → `"OPEN_EXR"` — Blender raises `TypeError` rather than guessing) and
+the bounding-box camera framing that fixed every render coming out solid
+black. The framing is *not* gated on `scene.camera is None` — that gate was itself
+the bug: `blender-cli` boots Blender's factory startup file, which always has
+a camera, so the gate meant framing never ran and every render pointed
+wherever the default camera happened to look. `render_image` takes
+`frame: bool = True` instead, so the caller states whether the scene's camera
+is deliberate; `frame=False` renders through the camera and lighting you
+placed. It frames the selection first when there is one, and names its objects
+`MCPRenderCam` / `MCPRenderSun` so it reuses them instead of littering a
+long-lived scene with `Camera.001`. Dropped as dead weight: `argparse`, the importer table
+(`execute_blender_code` already imports meshes), `_clear_scene` (the live
+scene is the point), and `use_denoising = False` (that was a workaround for
+apt Blender's missing OpenImageDenoiser; the official build has it).
+
+The tool lives in the `mcp-blender` image, not `blender-cli`, on purpose:
+editing anything baked into `blender-cli` costs a rebuild and restart, and a
+restart throws away the in-memory scene — the whole reason those two
+containers are split in the first place.
+
+`render_tools.py` has a `__main__` self-check that `ast.parse`s the script it
+would send (including a path with quotes in it) and asserts the format table.
+Worth running after any edit: a syntax error in that assembled script
+otherwise surfaces only as an opaque socket reply in the middle of a render.
+
+**Verified at runtime on 2026-09-22**, after the deploy: `render_image`
+through the public-facing `mcp-blender` returned
+`{"device":"GPU","backend":"OPTIX","camera":"MCPRenderCam","bytes":540198}`
+in **1.8 s** at 64 samples / 960x720, and the PNG was **opened and looked
+at** — a lit, correctly framed cube, not the black frame this pipeline has
+produced before. So `bpy.ops.render.render()` does behave inside the addon's
+`bpy.app.timers` command queue in a GUI Blender; the plain call is enough and
+`bpy.ops.render.render('EXEC_DEFAULT', write_still=True)` was not needed.
+Also note the
+render runs *inline on that single queue*, so it blocks preview frames and
+every other tool call for its duration (~2–4 s at 128 samples; both socket
+ends time out at 180 s) — there is a `ponytail:` comment on it saying to move
+it to a `blender -b` subprocess if renders ever get heavy.
+
+### Lazy GPU init, and the VRAM numbers behind it
+
+`docker/blender/startup.py`'s `_enable_gpu()` used to run at container start;
+it is now `_gpu_on_render`, a `@persistent` handler on
+`bpy.app.handlers.render_pre`. One copy of the logic now covers every render
+path — the `render_image` tool, a hand-written `bpy.ops.render.render()`
+through `execute_blender_code`, F12 — and the CUDA/OptiX driver is only
+opened once something actually renders. `scene.cycles.device = "GPU"` is set
+on *every* render rather than once, which covers the hazard that a `.blend`
+restored from MinIO carries whatever device it was saved with
+(`scene.cycles.device` lives inside the file; the backend choice lives in
+preferences).
+
+The `load_post` handler was dropped in that change and then **put back**: a
+`.blend` saved in RENDERED viewport shading restores that shading on load,
+and the viewport is the one Cycles path that never fires `render_pre`, so
+without it the preview panel silently went back to CPU for exactly the files
+most likely to be opened for a look. It is the same handler, so the cost is
+one extra `get_devices()` per file load — ~0.03 s and, measured, 0 MiB.
+
+The one Cycles path that does **not** fire `render_pre` is viewport RENDERED
+shading, so `docker/blender-mcp/preview_api.py`'s shading route calls the
+registered handlers itself — otherwise this change would have silently
+dropped the preview panel's Rendered view back to CPU, with no error and a
+correct-looking image, which is exactly how the original CPU-rendering bug
+hid for a day.
+
+**Be honest about what this bought: 0 MiB.** Measured on this host
+(`nvidia-smi`, 2026-09-22), which was the user's actual question:
+
+| process | idle VRAM | why |
+| --- | --- | --- |
+| `freecad-headless` | **0 MiB** | requests no GPU device at all; software GL, so it burns ~0.74 CPU cores 24/7 instead |
+| `blender-cli` | **180 MiB** | the viewport's GL context — this is what makes the live preview 27x faster than llvmpipe, and the preview panel needs it |
+| Cycles, during a render | **+~2.5 GB** | freed by Blender itself ~0.5 s after the render ends |
+
+So there was never idle Cycles VRAM to reclaim: assigning
+`compute_device_type` costs nothing, `get_devices()` dlopens libnvoptix and
+opens `/dev/nvidia-uvm` but reserves nothing, and Cycles already gave its
+working set back on its own. Expect before/after `nvidia-smi` to read the
+same. The change ships because it was asked for and because it collapses two
+copies of the enable logic into one — not because it frees memory. The 180
+MiB is the price of the preview panel; the only way to get it back is to stop
+running a GUI Blender.
+
+**The real GPU risk here is contention, not footprint.** This host is shared:
+38101 of 48935 MiB were already in use by neighbours at the time of
+measuring — `sglang::scheduler` alone holds 31720 MiB — leaving ~10.8 GB of
+headroom. A render spikes ~2.7 GB for a few seconds against that. If the
+harness ever fires renders from a chat loop, serialise them there.
+
+### `harness/` — the agent loop, and the only thing the browser talks to
+
+New Node 22 + TypeScript service (`harness/`, published on
+`HARNESS_PORT`=**8003**), built on `@earendil-works/pi-agent-core` +
+`pi-ai` (both pinned `0.87.0`) with `@modelcontextprotocol/sdk` 1.30.0 as an
+MCP *client*. It connects to both MCP servers over the compose network,
+exposes their tools to the model, and serves the built frontend as static
+files. It holds `FREECAD_MCP_API_KEY` and `BLENDER_MCP_API_KEY` server-side
+and proxies the preview routes, so **no key ever reaches the browser** — that
+is the whole reason the frontend has no origin of its own.
+
+**Published on `127.0.0.1` only**, the same as `minio` and for more reason:
+the page has no auth of its own, and anyone who opens it can ask the agent to
+run arbitrary Python inside both FreeCAD and Blender with both keys supplied
+for them. `ssh -L 8003:127.0.0.1:8003 <server>` to reach it from elsewhere;
+putting it on the LAN/tailnet/tunnel means a key check in front of `route()`
+first.
+
+The HTTP contract, which both sides are written against:
+
+| route | does |
+| --- | --- |
+| `POST /api/chat` | `{messages:[{role,content}]}` → `text/event-stream` of `Frame`s: `{t:"text",delta}`, `{t:"tool",phase,id,…}`, `{t:"error",message}` — defined in `harness/src/wire.ts`, mirrored in `frontend/src/Chat.tsx`. Never raw `AgentEvent`s; forwarding those *was* the bug |
+| `GET /api/preview/{freecad,blender}.png` | proxied frame, no auth from the browser |
+| `POST /api/preview/{freecad,blender}/{orbit,zoom,reset}` | query params only, never a body |
+| `GET /api/health` | `{freecad:bool, blender:bool}` |
+| `GET /*` | the built frontend, with SPA fallback |
+
+Things in it that are decisions, not accidents:
+
+- **Tool names are prefixed `freecad_` / `blender_`** because the two servers
+  genuinely collide: `list_storage_files`, `upload_file_to_storage` and
+  `download_file_from_storage` are registered by both
+  (`src/freecad_mcp/storage_tools.py` and
+  `docker/blender-mcp/storage_tools.py`). The unprefixed name stays in the
+  closure — the remote server has never heard of the prefix.
+- **Raw MCP JSON Schema is passed straight through as pi's `parameters`.**
+  pi-ai's validator detects the missing TypeBox `Kind` symbol and takes its
+  plain-JSON-Schema path, so no conversion layer is needed. `harness/src/
+  mcp.test.ts` runs the real `Agent` loop against a faux provider and proves
+  it; it was mutation-checked (calling the remote with the *prefixed* name
+  makes it fail).
+- **One long-lived `Agent` is the conversation**, reset when a POST carries
+  ≤1 message. The `{role,content}` wire shape cannot carry pi's
+  `AssistantMessage` (`usage`, `stopReason`, tool calls), so replaying the
+  posted history per request would silently drop every tool call. The harness
+  takes the last user message from the body and keeps the transcript itself.
+  **Consequence: it is single-conversation and single-user.** Two browsers
+  share one agent.
+- **MCP connections are made on the first chat, not at boot**, and the cache
+  clears on failure — a wrong key or a still-starting MCP server would
+  otherwise crash-loop the container.
+- **The SSE wire shape is the harness's own** (`harness/src/wire.ts`'s
+  `Frame`: `text` / `tool` / `error`), mirrored verbatim in
+  `frontend/src/Chat.tsx`. Forwarding pi-agent-core's `AgentEvent` instead
+  made the frontend guess at a library's internal names — it read `event` for
+  `assistantMessageEvent` and `tool_start` for `tool_execution_start`, so the
+  chat panel rendered *nothing* — and `turn_end`/`agent_end` re-sent the whole
+  transcript, base64 screenshots included, every turn. `normalise()` drops
+  everything that is not new text or tool state and clips tool args/results;
+  `harness/src/wire.test.ts` pins the frame set both sides agree on. The
+  subscriber is synchronous on purpose — the agent loop awaits subscribers, so
+  waiting for a socket drain there stalls the run.
+- **A provider failure resolves `prompt()`, it does not reject it** — pi's
+  StreamFn contract puts it on the final assistant message (and on
+  `state.errorMessage`), so the try/catch around `prompt()` never fires. The
+  error frame comes from `message_end` instead; without that, a bad
+  `OPENAI_API_KEY` looks exactly like a working stream that says nothing.
+- **Abort is wired to the *response's* `close`, not the request's**: `chat()`
+  drains the body with `for await`, which destroys the IncomingMessage, so a
+  `req.on("close")` registered afterwards can never fire and a closed tab
+  would leave the agent running tool calls nobody is watching.
+- The preview proxy appends `?key=` **last**, so a browser-supplied `key`
+  can never win.
+
+**Verified against a live endpoint on 2026-09-22.** `.env` now points at
+`OPENAI_BASE_URL=https://new-api.hieudm.site/v1` with
+`HARNESS_MODEL=nvidia/Qwen3.6-35B-A3B-NVFP4` (the key is in `.env`, which is
+gitignored). Three capabilities were checked *before* wiring it up, because
+a chat endpoint that lacks any one of them is useless to this harness:
+**tool calling** (`finish_reason: tool_calls` with correct arguments),
+**tool_calls deltas while streaming** (pi-agent-core drives everything
+through `streamFn`, so a non-streaming tool call would never arrive), and
+**image input** (it read a 1x1 red PNG back as "Red" — `get_view` and
+`get_viewport_screenshot` return image blocks, and a text-only model would
+break on them). pi-ai's
+`openaiProvider()` hardcodes `api.openai.com` and the Responses API, so the
+model is declared inline as `Model<"openai-completions">` and wrapped with
+`createProvider({auth: envApiKeyAuth(…), api: openAICompletionsApi()})`
+(all three imports confirmed present in the shipped `.d.ts`; it compiles).
+`contextWindow`/`maxTokens`/`cost` are placeholders — the model id is
+arbitrary and those only feed pi's accounting.
+
+### `frontend/` — React + Vite, chat plus two live viewports
+
+`frontend/` is built in the first stage of `harness/Dockerfile` and copied
+into the harness image as `public/`; there is no frontend container and no
+second origin. Deps are react + react-dom + vite + typescript, nothing else —
+no `@vitejs/plugin-react` (esbuild does the automatic JSX runtime from
+tsconfig; the cost is losing fast refresh), no state/UI/CSS/router library.
+
+**The frame pacing was ported from `src/freecad_mcp/preview.py`, not
+reinvented** — same reason, same numbers: one request in flight chained off
+the `<img>`'s `load`/`error` (not `fetch`), zero requests while
+`document.hidden`, ~900 ms idle / 120 ms for 2 s after an interaction, never
+below half the measured frame cost — uncapped, because the cap defeated the
+floor for exactly the slow frames it exists to protect (a 19.9 s software-GL
+frame must yield a ~9.9 s gap, not 1.2 s) — 3000 ms backoff on
+error, pause persisted in `localStorage`. It lives in `frontend/src/poll.js`
+as plain JS + JSDoc purely so `node --test` can run it without a TypeScript
+loader; `tsc` still type-checks it via `checkJs`. Its seven assertions are the
+only unit test in the frontend, and one of them pins the slow-frame case
+(19.9 s frame → 9945 ms gap) that the removed 1200 ms cap silently broke.
+
+Two browser-specific traps already handled: React's root-level `wheel`
+listener is passive, so zoom binds its own with `{passive:false}`; and
+`<Preview key={tab}>` remounts on tab switch so a queued orbit for the other
+backend is dropped rather than replayed against the wrong viewport.
+
+**Not built**: the FreeCAD project dropdown (`/preview/activate`) and
+Blender's Shading / Camera-view buttons. They are not in the harness'
+contract — the three routes it proxies are orbit/zoom/reset. That matters
+more than it sounds: `activate_document` is still not an MCP tool either (see
+the 1.1.3 section below), so with the dropdown gone too, **nothing can switch
+FreeCAD's active document** — and `get_view` stays broken for a document
+whose `ActiveView` is a TechDraw page. Add the proxy route and the dropdown,
+or expose the MCP tool, whichever comes first.
+
+### Deployed and verified end-to-end (2026-09-22)
+
+`docker compose up -d --build --remove-orphans` ran; all six services are up,
+both public endpoints answer 200, and the whole chain was driven for real:
+
+- **The harness drew CAD through the model.** A Vietnamese prompt produced
+  three tool calls (`freecad_create_document`, `freecad_create_object`,
+  `freecad_get_objects`), and the geometry was then checked **independently
+  of both the harness and the model**, straight over XML-RPC:
+  `volume = 9361.0` against an expected 9361 for 37x23x11, bbox 37/23/11,
+  6 faces, 1 solid.
+- **Tool surface**: 23 FreeCAD + 33 Blender = 56 tools, 56 unique names after
+  prefixing. `list_storage_files` / `upload_file_to_storage` /
+  `download_file_from_storage` really do collide across the two servers and
+  the prefix really does resolve them. 0/56 failed `toToolDeclaration`, 0/56
+  failed pi-ai's real `validateToolArguments`.
+- **Both preview panels were opened as images and looked at**, not just
+  curl'd for a 200 — FreeCAD 1014x803, Blender 1000x858. An orbit changed the
+  frame's md5, so it is not the `success: true` no-op this project has been
+  bitten by twice.
+- **VRAM, sampled every 0.5 s across a render**: 231 MiB idle → 1608 → **2733
+  peak** → 212 MiB, and flat at 212 for the following 18 s. Cycles takes the
+  memory only while rendering and gives it back by itself.
+- Latency for reference: `tools/list` 34–56 ms, `get_rpc_status` 6 ms,
+  `execute_code_headless` with a boolean cut 287 ms, Blender viewport
+  screenshot 895 ms, `render_image` 1.8 s. The harness's 600 s MCP timeout
+  has ~200x headroom on all of it.
+
+Still open:
+
+- **Nobody has opened the frontend in a real browser.** Every route was
+  exercised with curl and the bundle serves, but the polling scheduler, the
+  Pause button, drag-to-orbit and the tool-call rendering have not been seen
+  by a human eye. `ssh -L 8003:127.0.0.1:8003 <server>`, then
+  `http://127.0.0.1:8003`.
+- The FreeCAD project dropdown and Blender's Shading / Camera-view buttons
+  are still not built, and `activate_document` is still not an MCP tool — see
+  the note above; nothing can switch FreeCAD's active document.
+
+### The GUI dispatch wedge, and why it took 32 hours to notice
+
+Found while proving the harness could draw: every GUI-touching FreeCAD tool
+had been dead since **2026-09-21 01:30:53**, the moment the `freecad`
+container last started. `ping` and `get_rpc_status` answered instantly the
+whole time, so nothing looked wrong until someone called a real tool.
+
+The chain, in the order it was untangled:
+
+1. Tools returned `GUI_DISPATCH_FAILED: gave up after 60.0s waiting for
+   'list_documents' to start`. The task never *started*, so it was not a
+   stuck task — confirmed by the error text, which omits the
+   `(GUI thread has been busy for …)` hint `dispatch_to_gui` appends only
+   when `_processing` is set.
+2. `process_gui_tasks` defers a tick while
+   `QtWidgets.QApplication.activeModalWidget()` is set. In a headless
+   container nothing will ever dismiss a modal, so that deferral is
+   permanent, not momentary.
+3. The modal came from FreeCAD's own **auto-recovery**: the container is
+   SIGKILLed on every restart, so FreeCAD never exits cleanly and leaves
+   `~/.cache/FreeCAD/*/Cache/FreeCAD_Doc_<uuid>_<pid>/fc_recovery_file.*`
+   behind for each open document. The next start found three of them, ran
+   recovery, failed, and raised the dialog — the container log's only clue
+   was three `Original project file is corrupted: "/data/….FCStd"` lines.
+   **Those files are not corrupt**: all three are valid zips with a
+   `Document.xml` (191/163/69 members). The message is about the recovery
+   read, not the file on disk.
+
+Three fixes, all shipped:
+
+- `docker/freecad/entrypoint.sh` deletes the transient recovery dirs before
+  launching. Only one FreeCAD ever runs in this container, so anything there
+  at startup is by definition stale, and the data was only ever reachable
+  through the dialog that wedges the process. **Durable storage is MinIO** —
+  `save_document_to_storage`, not autosave.
+- `get_dispatch_status()` now reports a `pump` block
+  (`heartbeat`/`queued`/`draining`/`blocked_by`/`blocked_for_seconds`).
+  `DispatchHealth` only ever tracked tasks that **started**, which is why it
+  reported `state: healthy` for 32 hours while nothing drained at all — the
+  one failure mode it could not see. `get_rpc_status` now says
+  `blocked_by: "modal_dialog_open"` instead.
+- The 500 ms heartbeat is a repeating `QTimer` (`start_heartbeat`) instead of
+  a chain of self-arming `singleShot`s. `process_gui_tasks` returns early
+  when `_processing` is set, and that `return` sat *above* the `try` whose
+  `finally` armed the next tick, so a tick delivered by `processEvents()`
+  inside a running task was swallowed without re-arming — and if the drain it
+  interrupted was the wake path (`reschedule=False`, which never arms one
+  either) the chain ended for good. A repeating timer cannot be lost.
+
+Post-fix, `list_documents` answers in **0.01 s** and `pump` reads
+`{heartbeat: true, queued: 0, draining: false, blocked_by: null}`.
+
+**The rule this reinforces**: generated code must never open a modal dialog
+here — which is why `gui-and-interface.md` is deliberately not vendored into
+the API reference. It is also why a health check must report the queue, not
+just the tasks in it.
 
 ## FreeCAD API reference tool (2026-09-16)
 
@@ -319,6 +711,15 @@ the failure modes already hit once:
    this deployment needs the same treatment.
 
 ## GPU render (2026-09-13)
+
+> **`docker/render/` no longer exists** (2026-09-22). Everything below is
+> still true and still load-bearing, it just lives elsewhere now: the
+> blender.org-not-apt download and `ARG BLENDER_VERSION` are in
+> `docker/blender/Dockerfile`, the try-each-backend selection is
+> `docker/blender/startup.py`'s `render_pre` handler, and the format table
+> plus the bounding-box camera framing are in
+> `docker/blender-mcp/render_tools.py`. `docker compose --profile render run`
+> is replaced by the `render_image` MCP tool.
 
 The host has a real GPU (NVIDIA RTX PRO 5000 **Blackwell**, 48 GB VRAM,
 ~36/48 GB already used by other services on this host — check
@@ -480,7 +881,9 @@ MCP server half is plain `pip install blender-mcp==1.9.1` in
 
 **The live Blender instance rendered on CPU for its first day** — the GPU
 work documented in the "GPU render" section above only ever touched
-`docker/render/render.py` (the one-shot batch service). Blender ships with
+`docker/render/render.py` (the one-shot batch service; deleted 2026-09-22,
+and its `_enable_gpu()` here is now the lazy `_gpu_on_render` render_pre
+handler — see the 2026-09-22 section). Blender ships with
 `compute_device_type = 'NONE'` and every `.blend` stores its own
 `scene.cycles.device`, so the `blender` container happily accepted the
 compose GPU reservation and then rendered on CPU anyway, using **zero
@@ -576,3 +979,48 @@ the Blender server — and a viewport screenshot inspected visually.
 FreeCAD units are mm and Blender's are m, so a 33 mm box imports into
 Blender as a 33-unit object. Expected, but it looks like a bug the first
 time a part dwarfs everything else in the scene.
+
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
+
+This project is indexed by GitNexus as **freecad-mcp-custom** (1300 symbols, 2660 relationships, 111 execution flows).
+
+> Index stale? Run `node .gitnexus/run.cjs analyze --index-only` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? Bootstrap with `npx`, `bunx`, or `pnpm dlx` — e.g. `bunx gitnexus@latest analyze` (npm 11 npx crash; #1939).
+
+## Always Do
+
+- **MUST run impact before editing.** Use `impact({target: "symbolName", direction: "upstream"})` or `node .gitnexus/run.cjs impact "symbolName" --direction upstream --repo .`; report callers, processes, and risk. Never substitute grep for graph analysis.
+- **MUST analyze graph changes before committing.** Use `detect_changes({scope: "all"})` (MCP) or `node .gitnexus/run.cjs detect-changes --scope all --repo .` (CLI fallback). `partial: true` or `truncated: true` is not a clean check — a zero means unseen, not unaffected; re-run it. For regression review: `detect_changes({scope: "compare", base_ref: "main"})` or `node .gitnexus/run.cjs detect-changes --scope compare --base-ref "main" --repo .`.
+- MUST warn on HIGH/CRITICAL `risk` pre-edit; never use `riskSharedAxes` to waive a HIGH/CRITICAL `risk` warning. Compare File/symbol: MCP File omits axes; Graph-RAG expands File.
+- **MUST treat `risk: UNKNOWN` as unresolved, not as low.** An empty caller set is not evidence the symbol is unused — it can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). `impact` pairs `UNKNOWN` with a `riskNote` saying so. Confirm with a text search before treating the symbol as safe to change or delete; do not proceed on the strength of a zero.
+- **MUST use `query({search_query: "concept"})` for concepts/flows, `context({name: "symbolName"})` for a named symbol, or `impact` for blast radius, on read-only callers, dependencies, imports, or execution flow.** Graph first; text search only for empty/`UNKNOWN`/literals.
+- For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source→sink flows; needs `analyze --pdg`).
+
+## Never Do
+
+- NEVER edit a function, class, or method before MCP/CLI impact analysis.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis, and never read `UNKNOWN` as an all-clear — it means the walk could not answer, which is the one verdict that requires confirming by other means.
+- NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
+- NEVER commit before MCP/CLI graph change analysis.
+
+## Resources
+
+| Resource | Use for |
+| --- | --- |
+| `gitnexus://repo/freecad-mcp-custom/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/freecad-mcp-custom/clusters` | All functional areas |
+| `gitnexus://repo/freecad-mcp-custom/processes` | All execution flows |
+| `gitnexus://repo/freecad-mcp-custom/process/{name}` | Step-by-step execution trace |
+
+## CLI
+
+| Task | Read this skill file |
+| --- | --- |
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus-cli/SKILL.md` |
+
+<!-- gitnexus:end -->

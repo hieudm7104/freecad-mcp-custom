@@ -9,7 +9,8 @@ WORKDIR /app
 RUN pip install --no-cache-dir "blender-mcp==1.9.1" "mcp>=1.9.0,<2" uvicorn minio
 
 COPY docker/blender-mcp/http_auth.py docker/blender-mcp/oauth.py docker/blender-mcp/run_http.py ./
-COPY docker/blender-mcp/storage_tools.py docker/blender-mcp/preview_api.py ./
+COPY docker/blender-mcp/storage_tools.py docker/blender-mcp/preview_api.py \
+     docker/blender-mcp/render_tools.py ./
 # The same module the FreeCAD MCP server uses (freecad_mcp/storage.py),
 # copied in rather than duplicated so bucket/key/path rules stay identical
 # across both servers. It deliberately imports nothing FreeCAD-specific.

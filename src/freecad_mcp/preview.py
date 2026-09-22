@@ -8,7 +8,7 @@ in a browser to watch changes land in FreeCAD in near-real-time while an
 MCP client (a person, ChatGPT, etc.) drives it.
 
 The page has a second tab for the *Blender* instance, whose viewport lives
-behind a different server on a different domain (`blender-mcp`). Rather than
+behind a different server on a different domain (`mcp_blender`). Rather than
 pointing the browser at both origins — which would need CORS for the control
 calls and would put that server's API key in the page — the Blender tab hits
 ``/preview/blender/*`` here and this server proxies to
@@ -48,8 +48,8 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 from .freecad_client import FreeCADConnection
 
 # Where the Blender tab's viewport calls get forwarded. Set in
-# docker-compose.yml for the `mcp` service; absent means no Blender tab.
-_BLENDER_URL = os.environ.get("BLENDER_MCP_URL", "http://blender-mcp:8000").rstrip("/")
+# docker-compose.yml for the `mcp_freecad` service; absent means no Blender tab.
+_BLENDER_URL = os.environ.get("BLENDER_MCP_URL", "http://mcp-blender:8000").rstrip("/")
 _BLENDER_KEY = os.environ.get("BLENDER_MCP_API_KEY", "")
 
 # 1x1 transparent PNG, shown while there's nothing real to display yet.
@@ -128,7 +128,7 @@ const HAS_BLENDER = {blender_json};
 // Both tabs speak the exact same little REST dialect, so everything below
 // (drag/orbit, wheel/zoom, reset, polling) is written once against whichever
 // backend is active. The blender/* paths are proxied by this server to the
-// blender-mcp container — see preview.py's module docstring.
+// mcp_blender container — see preview.py's module docstring.
 const BACKENDS = {{
   freecad: {{ png: 'preview.png', base: 'preview' }},
   blender: {{ png: 'preview/blender.png', base: 'preview/blender' }},
@@ -441,7 +441,7 @@ def blender_preview_enabled() -> bool:
 
 
 def _blender_fetch(path: str, params: dict, method: str) -> tuple[int, bytes, str]:
-    """Call the blender-mcp server's matching ``/preview*`` route.
+    """Call the mcp_blender server's matching ``/preview*`` route.
 
     Blocking on purpose — every caller runs it through
     ``anyio.to_thread.run_sync`` (``urllib`` is used rather than ``httpx``
@@ -476,6 +476,21 @@ def register_preview_routes(
             )
         )
 
+    # Documents whose view has been fitted at least once by this page. Reset
+    # is per-process, which is right: a restart of this server means a new
+    # browser session anyway, and re-fitting once is cheap.
+    _fitted: set[str] = set()
+
+    def _active_document_name(freecad) -> str | None:
+        # One extra GUI round-trip per frame. It is a bare attribute read, not
+        # a render — the screenshot on the next line is the expensive half —
+        # so it costs the addon's single command queue very little next to
+        # what this route already asks of it.
+        try:
+            return freecad.get_active_document()
+        except Exception:
+            return None
+
     async def preview_png(request: Request):
         if not _check_key(request, api_key):
             return Response(status_code=401)
@@ -488,7 +503,21 @@ def register_preview_routes(
             # view_name=None: never force a canned orientation here — it
             # would undo whatever orbit_camera/zoom_camera/reset_view last
             # set, since this route is polled continuously.
-            encoded = freecad.get_active_screenshot(None, width, height, None)
+            #
+            # Exception: the very first frame of a document we have not shown
+            # before. Its camera is wherever FreeCAD left it, which for a
+            # freshly created document is not looking at the geometry — the
+            # panel then serves a 200, a valid PNG of the right size, and a
+            # blank image, which is indistinguishable from a working panel
+            # that has not drawn yet. Fit once, keyed on the document name, so
+            # a later orbit is still never undone.
+            name = _active_document_name(freecad)
+            first_frame = name is not None and name not in _fitted
+            if first_frame:
+                _fitted.add(name)
+            encoded = freecad.get_active_screenshot(
+                "Isometric" if first_frame else None, width, height, None
+            )
         except Exception:
             encoded = None
 
@@ -573,7 +602,7 @@ def register_preview_routes(
 
         return JSONResponse(result)
 
-    # --- Blender tab: straight pass-through to the blender-mcp server's own
+    # --- Blender tab: straight pass-through to the mcp_blender server's own
     # identically-shaped /preview* routes (docker/blender-mcp/preview_api.py).
     async def blender_png(request: Request):
         if not _check_key(request, api_key):
@@ -625,7 +654,7 @@ def register_preview_routes(
                 payload = {
                     "connected": False,
                     "success": False,
-                    "error": f"unexpected reply from blender-mcp (HTTP {status})",
+                    "error": f"unexpected reply from mcp-blender (HTTP {status})",
                 }
             return JSONResponse(payload, status_code=status if status >= 400 else 200)
 

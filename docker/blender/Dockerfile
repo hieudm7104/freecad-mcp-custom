@@ -1,7 +1,17 @@
-# CUDA runtime base so this GUI Blender instance can also render on the GPU
-# (the same reasoning/setup as docker/render/Dockerfile — see that file's
-# comments for the mirror URL and why the official binary is used instead of
-# apt's stripped-down "dfsg" package).
+# CUDA runtime base so this GUI Blender instance can render on the GPU.
+#
+# The official blender.org binary, not Ubuntu's apt `blender` package: that
+# one is a "dfsg" repackaging with non-free bits stripped — no STEP importer,
+# no OpenImageDenoiser, and — confirmed by running a GPU render and watching
+# `nvidia-smi` stay flat — no working CUDA/OptiX Cycles kernels either, so it
+# silently renders on CPU regardless of the device asked for.
+#
+# download.blender.org itself sits behind a Cloudflare challenge that returns
+# HTTP 403 to a plain container `curl`; this official mirror works. 5.2 LTS
+# specifically: 4.2.1's bundled OptiX SDK has no precompiled kernel for this
+# host's RTX PRO 5000 Blackwell and JIT-compiled one on *every* render (~5.5
+# min, not fixed by persisting OptiX's own disk cache); 5.2's newer SDK
+# targets Blackwell natively and renders in 2-4 s.
 FROM nvidia/cuda:12.6.3-runtime-ubuntu24.04
 
 ENV NVIDIA_VISIBLE_DEVICES=all

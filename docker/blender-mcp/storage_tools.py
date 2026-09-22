@@ -6,8 +6,8 @@ has no storage tools of its own). `storage.py` next to this file is the same
 module the FreeCAD server uses — COPY'd in by the Dockerfile so key layout,
 bucket and path rules can't drift between the two servers.
 
-Same two-container shape as the FreeCAD side: Blender runs in the `blender`
-container, this runs in `blender-mcp`, and the `/data` volume is mounted in
+Same two-container shape as the FreeCAD side: Blender runs in the
+`blender_cli` container, this runs in `mcp_blender`, and `/data` is mounted in
 both — so saving means *asking Blender to write the .blend into /data*, then
 uploading that file from here.
 """

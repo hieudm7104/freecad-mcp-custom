@@ -4,7 +4,7 @@ FROM debian:trixie-slim
 # 1.0.0+dfsg (the original Nov-2024 release) with no backports, while upstream
 # is on 1.1.x — and that apt build has no CalculiX (`ccx`) or `gmsh` anywhere
 # on the image, so `run_fem_analysis` could never actually solve or mesh. The
-# AppImage bundles both. Same lesson as docker/render/Dockerfile, where the
+# AppImage bundles both. Same lesson as docker/blender/Dockerfile, where the
 # apt Blender turned out to be missing its CUDA/OptiX kernels.
 #
 # Keep this version in lockstep with docker/mcp/Dockerfile: documents are

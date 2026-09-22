@@ -11,3 +11,10 @@ assets
 examples
 *.md
 !README.md
+# Build context is the repo root, so a host `npm install` would otherwise land
+# on top of the image's own `npm ci` (harness/Dockerfile's `COPY frontend/ ./`)
+# and the build would run the host's vite/esbuild binaries instead.
+**/node_modules
+**/dist
+# Keys; nothing COPYs it, and compose reads it from the project dir, not here.
+.env

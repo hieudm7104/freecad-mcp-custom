@@ -1,5 +1,15 @@
+# Service names and docker/ build-context folders deliberately don't match:
+#   docker/freecad     -> freecad-headless    docker/mcp         -> mcp-freecad
+#   docker/blender     -> blender-cli         docker/blender-mcp -> mcp-blender
+# Nothing resolves a service by its build path, and renaming the folders would
+# break `git log --follow` on docker/blender/addon.py — 3,900 vendored lines
+# with exactly one local patch, where diffing against upstream history is the
+# only thing keeping that patch from being lost on the next vendor bump.
+# Hyphens, not underscores, because these names are also hostnames: mcp-freecad
+# runs its --host through validators.hostname(), which rejects `_`, so an
+# underscored peer name makes it exit 2 and crash-loop.
 services:
-  freecad:
+  freecad-headless:
     build:
       context: .
       dockerfile: docker/freecad/Dockerfile
@@ -8,7 +18,7 @@ services:
     networks: [mcpnet]
     restart: unless-stopped
 
-  mcp:
+  mcp-freecad:
     build:
       context: .
       dockerfile: docker/mcp/Dockerfile
@@ -18,7 +28,7 @@ services:
       - "--port"
       - "8000"
       - "--host"
-      - "freecad"
+      - "freecad-headless"
     environment:
       - FREECAD_MCP_API_KEY=${FREECAD_MCP_API_KEY:?set FREECAD_MCP_API_KEY in .env}
       - FREECAD_MCP_OAUTH_CLIENT_ID=${FREECAD_MCP_OAUTH_CLIENT_ID:-}
@@ -28,73 +38,57 @@ services:
       - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-}
       - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-}
       - MINIO_BUCKET=${MINIO_BUCKET:-cad}
-      # Human-facing live-view page at /preview. Off: an open tab polls a
-      # screenshot continuously, which is sustained load on the FreeCAD and
-      # Blender GUI processes for something only a human watching a browser
-      # needs. Set to 1 here *and* BLENDER_MCP_PREVIEW=1 on the blender-mcp
-      # service to bring it back (the page lives here, the Blender viewport
-      # routes live there). MCP tools are unaffected by this either way.
-      - FREECAD_MCP_PREVIEW=0
+      # Human-facing live-view page at /preview, and the routes the harness'
+      # preview panel proxies — on, because that panel is the whole point of
+      # the frontend. It is not free: a watching tab pulls a fresh screenshot
+      # from each GUI process (~0.16 CPU-core-seconds per Blender frame on
+      # hardware GL, ~1 fps idle / ~10 fps during a drag), and both GUIs have
+      # a single command queue, so frames compete with MCP tool calls. The
+      # page paces itself for exactly that reason (see src/freecad_mcp/
+      # preview.py) — set this back to 0 here *and* BLENDER_MCP_PREVIEW=0 on
+      # mcp-blender to switch the cost off entirely; MCP tools are unaffected
+      # either way, only the panel goes dark.
+      - FREECAD_MCP_PREVIEW=1
       # Only used by that page: it proxies the Blender tab's viewport calls
-      # to blender-mcp over this network, so the browser stays on one origin
+      # to mcp-blender over this network, so the browser stays on one origin
       # and never sees the key below.
-      - BLENDER_MCP_URL=http://blender-mcp:8000
+      - BLENDER_MCP_URL=http://mcp-blender:8000
       - BLENDER_MCP_API_KEY=${BLENDER_MCP_API_KEY:-}
     volumes:
       - freecad_data:/data
     ports:
       - "${MCP_PORT:-8000}:8000"
-    depends_on: [freecad, minio]
+    depends_on: [freecad-headless, minio]
     networks: [mcpnet]
     restart: unless-stopped
 
-  render:
-    build:
-      context: .
-      dockerfile: docker/render/Dockerfile
-    volumes:
-      - freecad_data:/data
-      # `docker compose run --rm` throws away the container (and anything
-      # written under $HOME) after every render. Without this, Cycles'
-      # OptiX/CUDA JIT kernel cache never survives between invocations, so
-      # a brand-new GPU generation (no kernel precompiled into this Blender
-      # build) pays its ~5-minute JIT-compile cost on every single render
-      # instead of just the first.
-      - render_cache:/root/.cache
-    environment:
-      - CUDA_CACHE_PATH=/root/.cache/nv/ComputeCache
-      - OPTIX_CACHE_PATH=/root/.cache/nv/OptixCache
-    networks: [mcpnet]
-    profiles: ["render"]
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-
-  blender:
+  blender-cli:
     build:
       context: .
       dockerfile: docker/blender/Dockerfile
     volumes:
       # Screenshots (and any asset-download tool, if those ever get enabled)
       # are written by the addon in *this* container to a path the
-      # `blender-mcp` container then reads back — they only agree on that
+      # `mcp-blender` container then reads back — they only agree on that
       # path because both mount the same volume at the same mount point and
       # both set TMPDIR there. Without this, `get_viewport_screenshot`
       # fails with "Screenshot file was not created": the addon really did
       # write the file, just into a filesystem the other container can't see.
       - blender_tmp:/tmp/blendermcp
-      # The same volume FreeCAD/`mcp`/`render` use: lets Blender save .blend
-      # files where blender-mcp's storage tools can upload them, and lets it
-      # import meshes FreeCAD exported there.
+      # The same volume FreeCAD/`mcp-freecad` use: lets Blender save .blend
+      # files where mcp-blender's storage tools can upload them, lets it
+      # import meshes FreeCAD exported there, and is where `render_image`
+      # writes its output.
       - freecad_data:/data
     environment:
       - TMPDIR=/tmp/blendermcp
     networks: [mcpnet]
     restart: unless-stopped
+    # Reserving the device costs no VRAM by itself — it only makes /dev/nvidia*
+    # visible. Cycles opens the driver lazily now (docker/blender/startup.py's
+    # render_pre handler) and frees its ~2.5 GB when a render finishes; what
+    # this process holds while idle is the viewport's GL context (~180 MiB),
+    # which is what makes the live preview 27x faster than software GL.
     deploy:
       resources:
         reservations:
@@ -103,12 +97,12 @@ services:
               count: all
               capabilities: [gpu]
 
-  blender-mcp:
+  mcp-blender:
     build:
       context: .
       dockerfile: docker/blender-mcp/Dockerfile
     environment:
-      - BLENDER_HOST=blender
+      - BLENDER_HOST=blender-cli
       - BLENDER_PORT=9876
       - BLENDER_MCP_API_KEY=${BLENDER_MCP_API_KEY:?set BLENDER_MCP_API_KEY in .env}
       - BLENDER_MCP_OAUTH_CLIENT_ID=${BLENDER_MCP_OAUTH_CLIENT_ID:-}
@@ -117,10 +111,10 @@ services:
       # https://github.com/ahujasid/blender-mcp#safe-mode. On by default here
       # since this instance is reachable from the internet.
       - BLENDER_MCP_SAFE_MODE=1
-      # Viewport routes for the preview page's Blender tab — off, and only
-      # useful together with FREECAD_MCP_PREVIEW=1 on the `mcp` service,
-      # which is what actually serves the page. See that comment.
-      - BLENDER_MCP_PREVIEW=0
+      # Viewport routes for the preview panel's Blender view. Only useful
+      # together with FREECAD_MCP_PREVIEW=1 on the `mcp-freecad` service,
+      # which is what actually serves the page and proxies here.
+      - BLENDER_MCP_PREVIEW=1
       - TMPDIR=/tmp/blendermcp
       # Same storage bucket as the FreeCAD MCP server, so a mesh exported
       # from FreeCAD can be listed and pulled in here (and vice versa).
@@ -133,7 +127,33 @@ services:
       - freecad_data:/data
     ports:
       - "${BLENDER_MCP_PORT:-8002}:8000"
-    depends_on: [blender, minio]
+    depends_on: [blender-cli, minio]
+    networks: [mcpnet]
+    restart: unless-stopped
+
+  harness:
+    # The agent loop (pi-agent-core) plus the built chat/preview frontend it
+    # serves as static files. The only thing the browser talks to: it holds
+    # both MCP API keys server-side and proxies /api/preview/* so neither key
+    # ever reaches the page.
+    build:
+      context: .
+      dockerfile: harness/Dockerfile
+    environment:
+      - FREECAD_MCP_URL=http://mcp-freecad:8000
+      - FREECAD_MCP_API_KEY=${FREECAD_MCP_API_KEY:?set FREECAD_MCP_API_KEY in .env}
+      - BLENDER_MCP_URL=http://mcp-blender:8000
+      - BLENDER_MCP_API_KEY=${BLENDER_MCP_API_KEY:?set BLENDER_MCP_API_KEY in .env}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - HARNESS_MODEL=${HARNESS_MODEL:-}
+    # Bound to loopback for the same reason as minio below, and with more at
+    # stake: the page has no auth of its own, and it proxies an agent that can
+    # run arbitrary Python in both FreeCAD and Blender with both MCP keys.
+    # Reach it from elsewhere with `ssh -L 8003:127.0.0.1:8003 <server>`.
+    ports:
+      - "127.0.0.1:${HARNESS_PORT:-8003}:8000"
+    depends_on: [mcp-freecad, mcp-blender]
     networks: [mcpnet]
     restart: unless-stopped
 
@@ -169,7 +189,6 @@ services:
 
 volumes:
   freecad_data:
-  render_cache:
   blender_tmp:
   minio_data:
 

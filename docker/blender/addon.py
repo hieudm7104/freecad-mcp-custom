@@ -447,8 +447,8 @@ class BlenderMCPServer:
     # host changed from upstream's 'localhost' to '0.0.0.0'. register()
     # (below) instantiates this with no host argument, so the upstream
     # default only ever binds the loopback interface — invisible to the
-    # separate `blender-mcp` container that needs to reach this addon's
-    # socket over the Docker network as `blender:9876`.
+    # separate `mcp_blender` container that needs to reach this addon's
+    # socket over the Docker network as `blender_cli:9876`.
     def __init__(self, host='0.0.0.0', port=9876):
         self.host = host
         self.port = port

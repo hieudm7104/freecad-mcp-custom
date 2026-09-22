@@ -8,8 +8,8 @@ MCP servers' "save/load project" tools with a MinIO bucket, so work
 survives container churn and can be fetched from outside Docker.
 
 Deliberately free of any FreeCAD or Blender import: the same file is used
-by the `mcp` container (as `freecad_mcp.storage`) and COPY'd standalone
-into the `blender-mcp` image (as `storage`), so the two servers can't drift
+by the `mcp_freecad` container (as `freecad_mcp.storage`) and COPY'd
+standalone into the `mcp_blender` image (as `storage`), so they can't drift
 apart on bucket naming, key layout or error handling. See
 `docker/blender-mcp/Dockerfile`.
 

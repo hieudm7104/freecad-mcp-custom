@@ -1,0 +1,23 @@
+{
+  "name": "freecad-mcp-harness",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "tsc && node --test dist/*.test.js"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.87.0",
+    "@earendil-works/pi-ai": "0.87.0",
+    "@modelcontextprotocol/sdk": "1.30.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.19",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

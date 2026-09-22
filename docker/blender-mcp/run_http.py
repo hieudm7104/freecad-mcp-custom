@@ -10,7 +10,7 @@ _run_streamable_http and src/freecad_mcp/oauth.py — http_auth.py/oauth.py
 here are adapted copies of those).
 
 BLENDER_HOST/BLENDER_PORT (upstream's own env vars) point this at the
-`blender` service's addon socket — see docker-compose.yml.
+`blender_cli` service's addon socket — see docker-compose.yml.
 """
 
 import os
@@ -51,10 +51,17 @@ def main() -> None:
 
         register_storage_tools(mcp)
         print(
-            f"[blender-mcp] object storage tools enabled "
+            f"[mcp_blender] object storage tools enabled "
             f"(bucket '{storage.bucket_name()}' on {storage.endpoint()})",
             flush=True,
         )
+
+    # Also before the app is built, and unconditionally: rendering the live
+    # scene replaces the old one-shot `render` container, and unlike the
+    # storage tools it needs no MinIO (only /data).
+    from render_tools import register_render_tools
+
+    register_render_tools(mcp)
 
     app = mcp.streamable_http_app()
 
@@ -68,10 +75,10 @@ def main() -> None:
     serve_preview = preview_enabled()
     if serve_preview:
         register_preview_routes(app, api_key=api_key)
-        print("[blender-mcp] viewport preview routes enabled", flush=True)
+        print("[mcp_blender] viewport preview routes enabled", flush=True)
     else:
         print(
-            "[blender-mcp] viewport preview routes disabled "
+            "[mcp_blender] viewport preview routes disabled "
             "(set BLENDER_MCP_PREVIEW=1 to enable)",
             flush=True,
         )

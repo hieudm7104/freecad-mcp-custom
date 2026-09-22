@@ -93,7 +93,7 @@ def _run_in_blender(code: str) -> str:
 def _screenshot(max_size: int) -> bytes:
     from blender_mcp.server import get_blender_connection
 
-    # Written by the addon in the `blender` container and read back here —
+    # Written by the addon in the `blender_cli` container and read back here —
     # the two only agree on this path because both mount the same volume at
     # the same mount point (see docker-compose.yml's blender_tmp).
     tmp = Path(os.environ.get("TMPDIR", "/tmp")) / f"preview_{uuid.uuid4().hex}.png"
@@ -192,7 +192,18 @@ def _reset() -> None:
 
 
 def _set_shading(mode: str) -> None:
-    _run_in_blender(_FIND_VIEW + f"space.shading.type = {mode!r}\nprint(space.shading.type)\n")
+    # Viewport RENDERED shading runs Cycles but is the one Cycles path that
+    # does NOT fire `render_pre`, which is where docker/blender/startup.py
+    # enables the GPU — so without this the Rendered view silently drops to
+    # CPU and looks like a hang. Call the registered handler directly; a
+    # GPU-less host simply has none registered and behaves as before.
+    gpu = (
+        "for _h in bpy.app.handlers.render_pre:\n"
+        "    _h(bpy.context.scene)\n"
+    ) if mode == "RENDERED" else ""
+    _run_in_blender(
+        _FIND_VIEW + gpu + f"space.shading.type = {mode!r}\nprint(space.shading.type)\n"
+    )
 
 
 def register_preview_routes(app: Starlette, api_key: str) -> None:
