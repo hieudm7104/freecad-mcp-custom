@@ -476,16 +476,20 @@ def register_preview_routes(
             )
         )
 
-    # Documents whose view has been fitted at least once by this page. Reset
-    # is per-process, which is right: a restart of this server means a new
-    # browser session anyway, and re-fitting once is cheap.
-    _fitted: set[str] = set()
+    # The document the last frame was taken of. A *set* of already-fitted names
+    # was the first attempt and it is wrong: FreeCAD.newDocument with a name
+    # that is already taken silently makes Gear1, Gear2, ..., and a model
+    # retrying a build closes and recreates the same name, so "seen this name
+    # before" stops meaning "its camera is aimed at something". Fitting on
+    # *change* costs an orbit only when the active document actually switched,
+    # which is the moment the old framing stopped applying anyway.
+    _last_doc: list[str | None] = [None]
 
     def _active_document_name(freecad) -> str | None:
-        # One extra GUI round-trip per frame. It is a bare attribute read, not
-        # a render — the screenshot on the next line is the expensive half —
-        # so it costs the addon's single command queue very little next to
-        # what this route already asks of it.
+        # Measured: 14 ms, against 119 ms for the screenshot on the next line.
+        # Not free — it is a full round trip through the same GUI dispatch
+        # queue, so it is ~12% on top of every frame, not the rounding error
+        # an earlier comment here claimed.
         try:
             return freecad.get_active_document()
         except Exception:
@@ -512,9 +516,13 @@ def register_preview_routes(
             # that has not drawn yet. Fit once, keyed on the document name, so
             # a later orbit is still never undone.
             name = _active_document_name(freecad)
-            first_frame = name is not None and name not in _fitted
-            if first_frame:
-                _fitted.add(name)
+            first_frame = name is not None and name != _last_doc[0]
+            # Recorded on every frame, including the None between closing one
+            # document and opening the next. Updating it only when fitting
+            # leaves the old name latched, so closing "Gear" and recreating
+            # "Gear" — which is exactly what a model retrying a build does —
+            # reads as "no change" and serves a blank frame again.
+            _last_doc[0] = name
             encoded = freecad.get_active_screenshot(
                 "Isometric" if first_frame else None, width, height, None
             )

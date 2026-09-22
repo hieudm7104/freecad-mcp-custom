@@ -123,13 +123,30 @@ harness + frontend" before trusting a container name in this file.
   `docker/freecad/entrypoint.sh` still forces software GL and the
   `freecad-headless` service has no GPU reservation at all — which is also
   the answer to "does FreeCAD eat VRAM": it holds **0 MiB**, it just burns
-  CPU instead. Worth knowing: measured over 30 s with
-  **nothing calling it at all**, that container burns 22.2 CPU-seconds —
-  **0.74 cores continuously, 24/7** — and `top -H` shows dozens of
-  `llvmpipe` threads with ~40 minutes of accumulated CPU each. FreeCAD
-  redraws its viewport on a loop regardless of whether anyone is watching,
-  and software GL makes each redraw expensive. Same one-line fix would
-  apply, but that service needs a GPU reservation adding first.
+  CPU instead.
+
+  **Re-measured 2026-09-22, and the old figure here was wrong.** This file
+  used to say the container burns 0.74 cores continuously with nothing
+  calling it. It does not: read from `cpu.stat` over a fixed 18 s window with
+  no requests at all, it is **0.03 cores**. The cost is not idle, it is
+  per-frame, and it is much worse than 0.74 when someone is actually looking:
+
+  | | freecad-headless | blender-cli |
+  | --- | --- | --- |
+  | nobody watching | 0.03 core | 0.00 core |
+  | a tab watching the FreeCAD view (~1 fps) | **4.6–4.8 cores** | 0.00 |
+  | a tab watching the Blender view (~1 fps) | 0.09 | 0.37 core |
+
+  Same resolution, same pacing, **22x apart** — because `blender-cli` was
+  moved to hardware GL and this one was not. A frame costs 0.095–0.145 s on
+  either, but FreeCAD's is drawn by llvmpipe across ~35 threads on a 48-core
+  box. Take any single `docker stats --no-stream` reading here with
+  suspicion: it samples over a window short enough to report 800–1100% for a
+  container that is really at 2%.
+
+  The same one-line `__GLX_VENDOR_LIBRARY_NAME=nvidia` fix would apply, but
+  this service needs a GPU reservation adding first — and restarting it drops
+  every open document.
   Two Blender gotchas, both found by looking at the pixels and not the HTTP
   status: (1) a render-ready scene has the viewport locked to the scene
   camera, where `view_rotation`/`view_distance` aren't what's on screen —
@@ -322,7 +339,7 @@ hid for a day.
 | process | idle VRAM | why |
 | --- | --- | --- |
 | `freecad-headless` | **0 MiB** | requests no GPU device at all; software GL, so it burns ~0.74 CPU cores 24/7 instead |
-| `blender-cli` | **180 MiB** | the viewport's GL context — this is what makes the live preview 27x faster than llvmpipe, and the preview panel needs it |
+| `blender-cli` | **~180–220 MiB** | the viewport's GL context — this is what makes the live preview 27x faster than llvmpipe, and the preview panel needs it |
 | Cycles, during a render | **+~2.5 GB** | freed by Blender itself ~0.5 s after the render ends |
 
 So there was never idle Cycles VRAM to reclaim: assigning

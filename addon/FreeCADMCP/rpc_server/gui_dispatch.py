@@ -16,8 +16,8 @@ Robustness and performance guarantees:
    only as a fallback.
 3. Mouse-button guard: ``process_gui_tasks`` skips the current tick while
    mouse buttons are held so MCP tasks cannot interrupt 3D navigation drags.
-4. Clean shutdown: the ``_SHUTDOWN`` sentinel sets a flag that suppresses the
-   ``finally`` reschedule, so ``stop_rpc_server`` actually stops the loop.
+4. Clean shutdown: ``stop_rpc_server`` calls ``stop_heartbeat`` directly; the
+   ``_SHUTDOWN`` sentinel stops a drain that is already in flight.
 5. Exception isolation: exceptions inside a task are caught, logged, and
    returned as error strings; they never kill the dispatch loop.
 6. Stuck-task fail-fast: once a task that already started times out, later GUI
@@ -52,6 +52,10 @@ _processing_since: float = 0.0  # wall-clock time when _processing became True
 _task_ids = itertools.count(1)
 _dispatch_health = DispatchHealth()
 _heartbeat: "QtCore.QTimer | None" = None
+# Mirrors _heartbeat for status reads. get_dispatch_status() runs on the RPC
+# thread — that is the whole point of it, it has to answer when the GUI is
+# wedged — and QTimer.isActive() is a cross-thread Qt call from there.
+_heartbeat_on = False
 # Why the pump last refused to drain, and since when. A deferral is normal for
 # a fraction of a second (a drag, a menu); one that never clears means the
 # queue is dead, which used to be invisible because get_rpc_status reported
@@ -78,7 +82,7 @@ class _WakeSignal(QtCore.QObject):
         self._sig.emit()
 
     def _on_wake(self) -> None:
-        process_gui_tasks(reschedule=False)
+        process_gui_tasks()
 
 
 _waker: "_WakeSignal | None" = None
@@ -109,17 +113,33 @@ def start_heartbeat(interval_ms: int = 500) -> None:
     Qt event loop keeps running and nothing logs. A repeating timer cannot be
     lost: a swallowed tick is just a skipped tick.
     """
-    global _heartbeat
+    global _heartbeat, _heartbeat_on
     if _heartbeat is not None:
         return
+    # A stop() leaves its _SHUTDOWN sentinel in the queue: stop_rpc_server posts
+    # it and then stops the timer, so no tick ever consumes it. Left there, the
+    # first tick after a restart would drain it and stop the pump again —
+    # server "started", queue dead.
+    kept = []
+    while True:
+        try:
+            item = _rpc_request_queue.get_nowait()
+        except queue.Empty:
+            break
+        if item is not _SHUTDOWN:
+            kept.append(item)  # the RPC thread is already accepting: keep real work
+    for item in kept:
+        _rpc_request_queue.put(item)
     _heartbeat = QtCore.QTimer()
     _heartbeat.setInterval(interval_ms)
     _heartbeat.timeout.connect(process_gui_tasks)
     _heartbeat.start()
+    _heartbeat_on = True
 
 
 def stop_heartbeat() -> None:
-    global _heartbeat
+    global _heartbeat, _heartbeat_on
+    _heartbeat_on = False
     if _heartbeat is not None:
         _heartbeat.stop()
         _heartbeat = None
@@ -249,7 +269,7 @@ def get_dispatch_status() -> dict[str, Any]:
     # "healthy" for a queue that never drains at all -- which is exactly the
     # failure that is hardest to notice. Report the pump separately.
     status["pump"] = {
-        "heartbeat": _heartbeat is not None and _heartbeat.isActive(),
+        "heartbeat": _heartbeat_on,
         "queued": _rpc_request_queue.qsize(),
         "draining": _processing,
         "blocked_by": _blocked_by,
