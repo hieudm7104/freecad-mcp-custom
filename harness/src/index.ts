@@ -214,7 +214,18 @@ async function serveStatic(res: ServerResponse, pathname: string): Promise<void>
   try {
     body = await readFile(safe);
   } catch {
-    // Unknown path: the SPA's own router handles it.
+    // A missing *file* must 404. Falling back to index.html for, say, a stale
+    // /assets/<hash>.js answers a `<script type="module">` with
+    // `<!doctype html>`; the browser parses that as JavaScript, throws a
+    // SyntaxError, and the app never mounts — a blank page that looks exactly
+    // like a crash. That is what a cached index.html produces after a rebuild
+    // changes the asset hashes, so it is the normal case, not an edge one.
+    // Only an extensionless, route-shaped path gets the page.
+    if (extname(pathname)) {
+      res.writeHead(404, { "content-type": "text/plain", "cache-control": "no-store" });
+      res.end("not found");
+      return;
+    }
     name = join(PUBLIC, "index.html");
     try {
       body = await readFile(name);
@@ -224,7 +235,14 @@ async function serveStatic(res: ServerResponse, pathname: string): Promise<void>
       return;
     }
   }
-  res.writeHead(200, { "content-type": MIME[extname(name)] ?? "application/octet-stream" });
+  // index.html names content-hashed assets, so it must never be served stale;
+  // the assets it names can never change under their own name.
+  res.writeHead(200, {
+    "content-type": MIME[extname(name)] ?? "application/octet-stream",
+    "cache-control": name.endsWith("index.html")
+      ? "no-cache"
+      : "public, max-age=31536000, immutable",
+  });
   res.end(body);
 }
 

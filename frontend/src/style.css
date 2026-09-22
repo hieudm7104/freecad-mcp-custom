@@ -151,3 +151,15 @@ button.paused { border-color: var(--accent); color: var(--accent); }
   font-size: 12px;
   pointer-events: none;
 }
+
+.crash { max-width: 900px; margin: 40px auto; padding: 0 16px; }
+.crash pre {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+  overflow: auto;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

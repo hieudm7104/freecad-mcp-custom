@@ -366,7 +366,18 @@ The HTTP contract, which both sides are written against:
 | `GET /api/preview/{freecad,blender}.png` | proxied frame, no auth from the browser |
 | `POST /api/preview/{freecad,blender}/{orbit,zoom,reset}` | query params only, never a body |
 | `GET /api/health` | `{freecad:bool, blender:bool}` |
-| `GET /*` | the built frontend, with SPA fallback |
+| `GET /*` | the built frontend; extensionless paths fall back to the page, anything with a file extension 404s |
+
+**That 404 is load-bearing, not tidiness.** The fallback originally caught
+every unreadable path, so a request for a stale `/assets/<hash>.js` — which is
+what a cached `index.html` asks for the moment a rebuild changes the hashes —
+was answered with `index.html` at HTTP 200 and `content-type: text/html`. The
+browser then parses `<!doctype html>` as a module script, throws a
+SyntaxError, and the app never mounts: a blank page in the body colour, which
+reads as "the UI vanished" and not as "one file is missing". `index.html` is
+now served `no-cache` and the hashed assets `immutable`, which is the pairing
+that makes a redeploy land without a hard refresh. Any static server put in
+front of this needs both halves.
 
 Things in it that are decisions, not accidents:
 
@@ -471,6 +482,16 @@ by comparison. There is no hint for this case yet: the 200-with-a-blank-image
 path is exactly the "dead panel indistinguishable from a working one" shape,
 and the frontend would need to read `/preview/status` (which does report open
 documents) to tell them apart.
+
+**There is an error boundary in `main.tsx`, and it earns its keep.** React
+unmounts the entire tree on an uncaught render error, so the failure mode is
+an empty `#root` — a blank page that looks identical to a bundle that never
+loaded, with the cause only in a console nobody has open. The boundary puts
+the stack on screen instead. `Chat.tsx`'s `fold` is the related fix: it passes
+an *updater* to `setMsgs`, and React runs an updater during render, so a throw
+inside `apply()` escaped the `try/catch` wrapped around the stream and took the
+page down rather than skipping one malformed frame. The updater now catches
+and returns `prev` unchanged.
 
 Two browser-specific traps already handled: React's root-level `wheel`
 listener is passive, so zoom binds its own with `{passive:false}`; and

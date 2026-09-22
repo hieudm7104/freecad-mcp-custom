@@ -69,9 +69,16 @@ export default function Chat() {
     // just pushed.
     const fold = (f: Frame) =>
       setMsgs((prev) => {
-        const next = prev.slice();
-        next[next.length - 1] = { role: "assistant", parts: apply(next[next.length - 1].parts, f) };
-        return next;
+        // React runs an updater during render, so anything thrown in here
+        // escapes the try/catch around the stream below and unmounts the whole
+        // tree — a blank page instead of one skipped frame.
+        try {
+          const last = prev[prev.length - 1];
+          if (!last) return prev;
+          return [...prev.slice(0, -1), { role: "assistant", parts: apply(last.parts, f) }];
+        } catch {
+          return prev;
+        }
       });
 
     const ctrl = new AbortController();
