@@ -51,6 +51,14 @@ _processing = False  # re-entrancy guard: True while process_gui_tasks is draini
 _processing_since: float = 0.0  # wall-clock time when _processing became True
 _task_ids = itertools.count(1)
 _dispatch_health = DispatchHealth()
+_heartbeat: "QtCore.QTimer | None" = None
+# Why the pump last refused to drain, and since when. A deferral is normal for
+# a fraction of a second (a drag, a menu); one that never clears means the
+# queue is dead, which used to be invisible because get_rpc_status reported
+# only _dispatch_health -- and that stays "healthy" when no task ever STARTS.
+_blocked_by: str | None = None
+_blocked_since: float = 0.0
+_blocked_logged = False
 
 
 class _WakeSignal(QtCore.QObject):
@@ -88,6 +96,35 @@ def cleanup_waker() -> None:
     _waker = None
 
 
+def start_heartbeat(interval_ms: int = 500) -> None:
+    """Start the fallback drain timer. Call once from the GUI thread.
+
+    A repeating QTimer, not a chain of ``singleShot`` calls. The chain had a
+    single point of failure: ``process_gui_tasks`` returns early when
+    ``_processing`` is set, and that ``return`` sits *above* the ``try`` whose
+    ``finally`` armed the next tick. A tick delivered by ``processEvents()``
+    inside a running task was therefore swallowed without re-arming, and when
+    the drain it interrupted was the wake path (``reschedule=False``, which
+    never arms one either) the chain ended for good -- silently, because the
+    Qt event loop keeps running and nothing logs. A repeating timer cannot be
+    lost: a swallowed tick is just a skipped tick.
+    """
+    global _heartbeat
+    if _heartbeat is not None:
+        return
+    _heartbeat = QtCore.QTimer()
+    _heartbeat.setInterval(interval_ms)
+    _heartbeat.timeout.connect(process_gui_tasks)
+    _heartbeat.start()
+
+
+def stop_heartbeat() -> None:
+    global _heartbeat
+    if _heartbeat is not None:
+        _heartbeat.stop()
+        _heartbeat = None
+
+
 def _flush_gui_events(delay_ms: int = 20) -> None:
     FreeCADGui.updateGui()
     app = QtWidgets.QApplication.instance()
@@ -107,15 +144,17 @@ def _flush_gui_events(delay_ms: int = 20) -> None:
 
 
 def process_gui_tasks(reschedule: bool = True) -> None:
-    """Drain queued GUI-thread callables and optionally reschedule.
+    """Drain queued GUI-thread callables.
 
     Skips the current tick when any mouse button is held (e.g., 3D navigation
     drag) or when already executing a task (re-entrancy guard). The guard
     prevents ``doc.recompute()`` or ``processEvents()`` inside a task from
     triggering a nested ``process_gui_tasks`` call that corrupts FreeCAD state.
 
-    ``reschedule=False`` is used by the immediate-wake path so it does not
-    start a second heartbeat chain alongside the existing 500 ms one.
+    ``reschedule`` is accepted and ignored; the heartbeat is now a repeating
+    timer owned by ``start_heartbeat`` (see there for why the old self-arming
+    chain was a liability). Kept in the signature so an out-of-tree caller
+    passing it keeps working.
     """
     global _processing, _processing_since
     if _processing:
@@ -124,13 +163,23 @@ def process_gui_tasks(reschedule: bool = True) -> None:
     shutdown = False
     try:
         if _rpc_request_queue.empty():
+            _note_unblocked()
             return  # nothing queued; skip cursor/status-bar churn on idle heartbeat ticks
+        # Each of these defers the tick. On a desktop they clear the moment the
+        # user lets go; in this headless container nobody ever will, so a
+        # modal dialog opened by generated code wedges the queue permanently.
+        # Record which one, so get_rpc_status can say so instead of reporting
+        # "healthy" while nothing drains.
         if QtWidgets.QApplication.mouseButtons() != QtCore.Qt.NoButton:
-            return  # user is dragging; defer to next tick
+            _note_blocked("mouse_button_held")
+            return
         if QtWidgets.QApplication.activePopupWidget() is not None:
-            return  # context menu or popup open; defer to next tick
+            _note_blocked("popup_open")
+            return
         if QtWidgets.QApplication.activeModalWidget() is not None:
-            return  # modal dialog open; defer to next tick
+            _note_blocked("modal_dialog_open")
+            return
+        _note_unblocked()
 
         _processing = True
         _processing_since = time.monotonic()
@@ -164,8 +213,8 @@ def process_gui_tasks(reschedule: bool = True) -> None:
                 status_bar.clearMessage()
     finally:
         _processing = False
-        if not shutdown and reschedule:
-            QtCore.QTimer.singleShot(500, process_gui_tasks)
+        if shutdown:
+            stop_heartbeat()
 
 
 def request_shutdown() -> None:
@@ -173,9 +222,42 @@ def request_shutdown() -> None:
     _rpc_request_queue.put(_SHUTDOWN)
 
 
+def _note_blocked(reason: str) -> None:
+    global _blocked_by, _blocked_since, _blocked_logged
+    now = time.monotonic()
+    if _blocked_by != reason:
+        _blocked_by, _blocked_since, _blocked_logged = reason, now, False
+    elif not _blocked_logged and now - _blocked_since > 30:
+        _blocked_logged = True
+        FreeCAD.Console.PrintError(
+            f"MCP RPC: GUI queue has not drained for {now - _blocked_since:.0f}s "
+            f"({reason}). Nothing here can dismiss it -- restart the FreeCAD "
+            f"container. Generated code must never open a modal dialog.\n"
+        )
+
+
+def _note_unblocked() -> None:
+    global _blocked_by, _blocked_logged
+    if _blocked_by is not None:
+        _blocked_by, _blocked_logged = None, False
+
+
 def get_dispatch_status() -> dict[str, Any]:
     """Return GUI dispatch health without touching FreeCAD's GUI thread."""
-    return _dispatch_health.snapshot()
+    status = _dispatch_health.snapshot()
+    # _dispatch_health only tracks tasks that STARTED, so on its own it reports
+    # "healthy" for a queue that never drains at all -- which is exactly the
+    # failure that is hardest to notice. Report the pump separately.
+    status["pump"] = {
+        "heartbeat": _heartbeat is not None and _heartbeat.isActive(),
+        "queued": _rpc_request_queue.qsize(),
+        "draining": _processing,
+        "blocked_by": _blocked_by,
+        "blocked_for_seconds": (
+            round(time.monotonic() - _blocked_since, 1) if _blocked_by else 0.0
+        ),
+    }
+    return status
 
 
 def dispatch_to_gui(
