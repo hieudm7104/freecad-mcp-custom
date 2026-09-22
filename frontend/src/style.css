@@ -1,12 +1,45 @@
+/* Light by default, dark only when the OS asks for it.
+ *
+ * Light is the default on purpose: both viewports in the panel next door are
+ * light (FreeCAD's 3D view is near-white, Blender's is mid-grey), so a dark
+ * chrome put a glaring white rectangle next to a black one. Every colour is a
+ * token for the same reason — the dark block below only overrides :root, so a
+ * hardcoded hex anywhere else silently stops following the theme.
+ */
 :root {
-  color-scheme: dark;
-  --bg: #16181c;
-  --panel: #1e2126;
-  --line: #2e333b;
-  --fg: #e6e8ea;
-  --dim: #97a0ab;
-  --accent: #6aa9ff;
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --panel: #f6f7f9;
+  --line: #d8dde3;
+  --fg: #1a1d21;
+  --dim: #5c6773;
+  --accent: #1f6feb;
+  --btn: #eceff3;
+  --user: #dce8fb;
+  --tool-bg: #eef1f5;
+  --input: #ffffff;
+  --err: #cf222e;
+  --ok: #1a7f37;
+  --off: #9aa4b0;
 }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181c;
+    --panel: #1e2126;
+    --line: #2e333b;
+    --fg: #e6e8ea;
+    --dim: #97a0ab;
+    --accent: #6aa9ff;
+    --btn: #2a2f36;
+    --user: #2a3341;
+    --tool-bg: #191c21;
+    --input: #16191e;
+    --err: #ff7b72;
+    --ok: #3fb950;
+    --off: #6b7280;
+  }
+}
+
 * { box-sizing: border-box; }
 body {
   margin: 0;
@@ -16,7 +49,7 @@ body {
 }
 button, textarea, select { font: inherit; color: inherit; }
 button {
-  background: #2a2f36;
+  background: var(--btn);
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 4px 10px;
@@ -47,7 +80,7 @@ button.paused { border-color: var(--accent); color: var(--accent); }
 .messages { flex: 1; overflow-y: auto; padding: 12px; }
 .msg { margin-bottom: 14px; }
 .msg.user .text {
-  background: #2a3341;
+  background: var(--user);
   border-radius: 8px;
   padding: 6px 10px;
   display: inline-block;
@@ -57,12 +90,12 @@ button.paused { border-color: var(--accent); color: var(--accent); }
 
 .tool {
   border-left: 2px solid var(--accent);
-  background: #191c21;
+  background: var(--tool-bg);
   margin: 6px 0;
   padding: 4px 8px;
   border-radius: 0 6px 6px 0;
 }
-.tool.failed { border-left-color: #ff7b72; }
+.tool.failed { border-left-color: var(--err); }
 .tool-head { font-weight: 600; }
 .tool code {
   display: block;
@@ -78,7 +111,7 @@ button.paused { border-color: var(--accent); color: var(--accent); }
   flex: 1;
   resize: none;
   height: 60px;
-  background: #16191e;
+  background: var(--input);
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 6px 8px;
@@ -92,14 +125,14 @@ button.paused { border-color: var(--accent); color: var(--accent); }
   height: 7px;
   margin-left: 6px;
   border-radius: 50%;
-  background: #6b7280;
+  background: var(--off);
 }
-.dot.up { background: #3fb950; }
+.dot.up { background: var(--ok); }
 .status { color: var(--dim); margin-left: auto; }
 
 .preview { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .preview-bar { display: flex; align-items: center; gap: 8px; padding: 8px; }
-.err { color: #ff7b72; }
+.err { color: var(--err); }
 .shot { position: relative; flex: 1; min-height: 0; display: flex; }
 .shot img {
   flex: 1;

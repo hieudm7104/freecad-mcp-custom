@@ -454,6 +454,24 @@ loader; `tsc` still type-checks it via `checkJs`. Its seven assertions are the
 only unit test in the frontend, and one of them pins the slow-frame case
 (19.9 s frame → 9945 ms gap) that the removed 1200 ms cap silently broke.
 
+**Light by default, dark only under `prefers-color-scheme: dark`.** The first
+version hardcoded `color-scheme: dark`, and the user's first look at it in a
+real browser was "UI lỗi, chat thì bị nền đen" — because the panel beside the
+chat shows two *light* viewports (FreeCAD's 3D view is near-white, Blender's
+mid-grey), so a black chat column sat against a glaring white rectangle.
+Every colour in `style.css` is a `:root` token for this reason: the dark block
+only overrides `:root`, so a hardcoded hex anywhere else silently stops
+following the theme.
+
+An empty FreeCAD panel is **not** a bug — with no document open,
+`get_active_screenshot` has nothing to capture and `preview_png` serves its
+1x1 `_BLANK_PNG` (68 bytes, HTTP 200). Blender always has its startup scene,
+so that tab always shows something, which makes the FreeCAD one look broken
+by comparison. There is no hint for this case yet: the 200-with-a-blank-image
+path is exactly the "dead panel indistinguishable from a working one" shape,
+and the frontend would need to read `/preview/status` (which does report open
+documents) to tell them apart.
+
 Two browser-specific traps already handled: React's root-level `wheel`
 listener is passive, so zoom binds its own with `{passive:false}`; and
 `<Preview key={tab}>` remounts on tab switch so a queued orbit for the other
