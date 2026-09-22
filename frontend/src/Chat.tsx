@@ -55,7 +55,14 @@ export default function Chat() {
   // Aborting also drops the socket, which is what stops the run server-side.
   const abort = useRef<AbortController | null>(null);
 
-  useEffect(() => bottom.current?.scrollIntoView({ block: "end" }), [msgs]);
+  // Block body, not a concise one: `() => expr` hands React whatever `expr`
+  // evaluates to as the cleanup, and React calls anything that is not
+  // `undefined`. That is how an effect ends up throwing "destroy is not a
+  // function" from deep inside the commit phase, where the stack names only
+  // minified React internals.
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ block: "end" });
+  }, [msgs]);
 
   async function send() {
     const text = input.trim();
